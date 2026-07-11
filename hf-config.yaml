@@ -1,0 +1,26 @@
+host: ""
+port: 7860
+
+tls:
+  enable: false
+  cert: ""
+  key: ""
+
+remote-management:
+  allow-remote: false
+  secret-key: ""
+  disable-control-panel: true
+  disable-auto-update-panel: true
+
+auth-dir: "~/.cli-proxy-api"
+api-keys: []
+debug: false
+request-log: false
+logging-to-file: false
+usage-statistics-enabled: false
+ws-auth: true
+
+plugins:
+  enabled: false
+  dir: "plugins"
+  configs: {}
