@@ -16,7 +16,7 @@ auth-dir: "~/.cli-proxy-api"
 api-keys: []
 debug: false
 request-log: false
-logging-to-file: false
+logging-to-file: true
 usage-statistics-enabled: false
 ws-auth: true
 
