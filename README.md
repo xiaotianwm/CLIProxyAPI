@@ -1,3 +1,14 @@
+---
+title: CLIProxyAPI
+emoji: 🚀
+colorFrom: blue
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # CLI Proxy API
 
 English | [中文](README_CN.md) | [日本語](README_JA.md)
