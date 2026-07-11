@@ -29,7 +29,7 @@ COPY hf-config.yaml /CLIProxyAPI/config.yaml
 
 WORKDIR /CLIProxyAPI
 
-EXPOSE 7860
+EXPOSE 8317
 
 ENV TZ=Asia/Shanghai
 

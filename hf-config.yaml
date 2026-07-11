@@ -1,5 +1,5 @@
 host: ""
-port: 7860
+port: 8317
 
 tls:
   enable: false
