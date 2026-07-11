@@ -7,9 +7,9 @@ tls:
   key: ""
 
 remote-management:
-  allow-remote: false
+  allow-remote: true
   secret-key: ""
-  disable-control-panel: true
+  disable-control-panel: false
   disable-auto-update-panel: true
 
 auth-dir: "~/.cli-proxy-api"
