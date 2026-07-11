@@ -5,6 +5,7 @@ cli-proxy-api
 # Configuration
 config.yaml
 .env
+.northflank-management-password.txt
 
 # Generated content
 bin/*
