@@ -187,6 +187,13 @@ type RemoteManagement struct {
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
 }
 
+// UpstreamBillingProbe configures best-effort upstream billing probes for OpenAI-compatible keys.
+type UpstreamBillingProbe struct {
+	// IntervalMinutes controls how often the background probe refreshes results.
+	// Zero or negative values fall back to the default.
+	IntervalMinutes int `yaml:"interval-minutes"`
+}
+
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
 // It provides configuration options for automatic failover mechanisms.
 type QuotaExceeded struct {

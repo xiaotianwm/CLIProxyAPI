@@ -28,6 +28,9 @@ type Config struct {
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
 
+	// UpstreamBillingProbe configures best-effort upstream rate probing for management UI.
+	UpstreamBillingProbe UpstreamBillingProbe `yaml:"upstream-billing-probe" json:"upstream-billing-probe"`
+
 	// Plugins configures dynamic plugin discovery and per-plugin settings.
 	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
 

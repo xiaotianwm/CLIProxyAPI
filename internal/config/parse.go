@@ -36,6 +36,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.UpstreamBillingProbe.IntervalMinutes = DefaultUpstreamBillingProbeIntervalMinutes
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
@@ -59,6 +60,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		cfg.RemoteManagement.SecretKey = string(hashed)
 	}
 
+	if current := strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository); current == "" || current == LegacyPanelGitHubRepository {
+		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	}
+
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
@@ -67,6 +72,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
 		cfg.Pprof.Addr = DefaultPprofAddr
+	}
+
+	if cfg.UpstreamBillingProbe.IntervalMinutes <= 0 {
+		cfg.UpstreamBillingProbe.IntervalMinutes = DefaultUpstreamBillingProbeIntervalMinutes
 	}
 
 	if cfg.LogsMaxTotalSizeMB < 0 {

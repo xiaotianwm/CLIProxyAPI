@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -339,6 +340,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == "plugins"
 		case "routing.strategy":
 			return node.Value == "round-robin"
+		case "upstream-billing-probe.interval-minutes":
+			return node.Value == strconv.Itoa(DefaultUpstreamBillingProbeIntervalMinutes)
 		}
 	}
 

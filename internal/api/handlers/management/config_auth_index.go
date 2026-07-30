@@ -35,7 +35,8 @@ type vertexCompatKeyWithAuthIndex struct {
 
 type openAICompatibilityAPIKeyWithAuthIndex struct {
 	config.OpenAICompatibilityAPIKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex       string                     `json:"auth-index,omitempty"`
+	UpstreamBilling *upstreamBillingProbeEntry `json:"upstream-billing,omitempty"`
 }
 
 type openAICompatibilityWithAuthIndex struct {
@@ -295,12 +296,21 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 			response.AuthIndex = liveIndexByID[id]
 		} else {
 			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
+			billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 			for j := range entry.APIKeyEntries {
 				apiKeyEntry := entry.APIKeyEntries[j]
 				id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)
+				var billing *upstreamBillingProbeEntry
+				if authIndex := strings.TrimSpace(liveIndexByID[id]); authIndex != "" {
+					if cached, ok := billingByAuthIndex[authIndex]; ok {
+						item := cached
+						billing = &item
+					}
+				}
 				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
 					OpenAICompatibilityAPIKey: apiKeyEntry,
 					AuthIndex:                 liveIndexByID[id],
+					UpstreamBilling:           billing,
 				}
 			}
 		}

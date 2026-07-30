@@ -139,6 +139,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
 		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
 		mgmt.DELETE("/openai-compatibility", s.mgmt.DeleteOpenAICompat)
+		mgmt.GET("/upstream-billing-probe", s.mgmt.GetUpstreamBillingProbe)
+		mgmt.PUT("/upstream-billing-probe", s.mgmt.PutUpstreamBillingProbe)
+		mgmt.POST("/upstream-billing-probe/refresh", s.mgmt.RefreshUpstreamBilling)
 
 		mgmt.GET("/vertex-api-key", s.mgmt.GetVertexCompatKeys)
 		mgmt.PUT("/vertex-api-key", s.mgmt.PutVertexCompatKeys)

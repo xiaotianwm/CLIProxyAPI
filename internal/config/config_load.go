@@ -77,6 +77,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.UpstreamBillingProbe.IntervalMinutes = DefaultUpstreamBillingProbeIntervalMinutes
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
@@ -113,6 +114,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed)
 	}
 
+	if migrateLegacyPanelGitHubRepository(configFile, &cfg) {
+		// persist migration already handled by helper
+	}
+
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
@@ -121,6 +126,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
 	if cfg.Pprof.Addr == "" {
 		cfg.Pprof.Addr = DefaultPprofAddr
+	}
+
+	if cfg.UpstreamBillingProbe.IntervalMinutes <= 0 {
+		cfg.UpstreamBillingProbe.IntervalMinutes = DefaultUpstreamBillingProbeIntervalMinutes
 	}
 
 	if cfg.LogsMaxTotalSizeMB < 0 {
@@ -185,4 +194,20 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+func migrateLegacyPanelGitHubRepository(configFile string, cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	current := strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
+	if current != "" && current != LegacyPanelGitHubRepository {
+		return false
+	}
+	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	if configFile == "" {
+		return true
+	}
+	_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "panel-github-repository"}, DefaultPanelGitHubRepository)
+	return true
 }
