@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,7 @@ import (
 
 const (
 	defaultUpstreamBillingProbeIntervalMinutes = 30
-	upstreamBillingProbeTimeout                = 10 * time.Second
+	upstreamBillingProbeTimeout                = 5 * time.Second
 	upstreamBillingProbeMaxBodyBytes           = 64 * 1024
 )
 
@@ -322,12 +323,24 @@ func (h *Handler) refreshUpstreamBilling(ctx context.Context) []upstreamBillingP
 	defer cancel()
 
 	auths := h.authManager.List()
-	entries := make([]upstreamBillingProbeEntry, 0, len(auths))
+	entriesCh := make(chan upstreamBillingProbeEntry, len(auths))
+	var wg sync.WaitGroup
 	for _, auth := range auths {
-		entry, ok := h.probeUpstreamBillingEntry(timeoutCtx, auth)
-		if !ok {
-			continue
-		}
+		auth := auth
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			entry, ok := h.probeUpstreamBillingEntry(timeoutCtx, auth)
+			if ok {
+				entriesCh <- entry
+			}
+		}()
+	}
+	wg.Wait()
+	close(entriesCh)
+
+	entries := make([]upstreamBillingProbeEntry, 0, len(auths))
+	for entry := range entriesCh {
 		entries = append(entries, entry)
 	}
 	h.storeUpstreamBillingProbeCache(entries)
