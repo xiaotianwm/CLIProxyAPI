@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -76,5 +77,49 @@ func TestCodexExecutorCompactAddsDefaultInstructionsWithoutInjectingImageTool(t 
 				t.Fatalf("payload = %s", string(resp.Payload))
 			}
 		})
+	}
+}
+
+func TestCodexExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.4","output":[{"type":"compaction","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	stream, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","stream":true,"input":[{"type":"message","role":"user","content":"history"},{"type":"compaction_trigger"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	if gotPath != "/responses/compact" {
+		t.Fatalf("path = %q, want /responses/compact", gotPath)
+	}
+
+	var out bytes.Buffer
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+		out.Write(chunk.Payload)
+	}
+	body := out.String()
+	if !bytes.Contains([]byte(body), []byte(`"type":"response.output_item.done"`)) ||
+		!bytes.Contains([]byte(body), []byte(`"type":"compaction"`)) ||
+		!bytes.Contains([]byte(body), []byte(`"encrypted_content":"opaque-state"`)) {
+		t.Fatalf("stream did not expose compaction item: %s", body)
 	}
 }

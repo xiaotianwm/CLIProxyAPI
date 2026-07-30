@@ -293,3 +293,24 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
+
+func (e *CodexExecutor) executeCompactionTriggerStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	resp, err := e.executeCompact(ctx, auth, req, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	headers := resp.Headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	headers.Set("Content-Type", "text/event-stream")
+
+	chunks := xaiBuildCompactionTriggerStreamChunks(nil, resp.Payload)
+	out := make(chan cliproxyexecutor.StreamChunk, len(chunks))
+	for _, chunk := range chunks {
+		out <- cliproxyexecutor.StreamChunk{Payload: chunk}
+	}
+	close(out)
+	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}, nil
+}
