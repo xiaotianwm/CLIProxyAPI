@@ -118,6 +118,7 @@ func (e *XAIExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Aut
 	if errCompact != nil {
 		return resp, errCompact
 	}
+	data = normalizeCompactionSummaryOutput(data)
 
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, data, &param)
@@ -341,7 +342,8 @@ func xaiBuildCompactionBaseResponse(prepared *xaiPreparedRequest, compactData []
 func xaiCompactionOutputItem(compactData []byte, responseID string) []byte {
 	item := []byte(`{"type":"compaction"}`)
 	for _, itemResult := range gjson.GetBytes(compactData, "output").Array() {
-		if itemResult.Get("type").String() != "compaction" {
+		itemType := itemResult.Get("type").String()
+		if itemType != "compaction" && itemType != "compaction_summary" {
 			continue
 		}
 		if itemResult.Type == gjson.JSON {
@@ -349,13 +351,32 @@ func xaiCompactionOutputItem(compactData []byte, responseID string) []byte {
 		}
 		break
 	}
-	if !gjson.GetBytes(item, "type").Exists() {
+	if gjson.GetBytes(item, "type").String() != "compaction" {
 		item, _ = sjson.SetBytes(item, "type", "compaction")
 	}
 	if !gjson.GetBytes(item, "id").Exists() {
 		item, _ = sjson.SetBytes(item, "id", xaiCompactionItemID(responseID))
 	}
 	return item
+}
+
+func normalizeCompactionSummaryOutput(compactData []byte) []byte {
+	output := gjson.GetBytes(compactData, "output")
+	if !output.IsArray() {
+		return compactData
+	}
+
+	normalized := compactData
+	for index, item := range output.Array() {
+		if item.Get("type").String() != "compaction_summary" {
+			continue
+		}
+		updated, err := sjson.SetBytes(normalized, fmt.Sprintf("output.%d.type", index), "compaction")
+		if err == nil {
+			normalized = updated
+		}
+	}
+	return normalized
 }
 
 func xaiCompactionResponseID(compactData []byte) string {

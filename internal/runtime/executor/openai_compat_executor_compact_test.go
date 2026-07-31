@@ -83,7 +83,7 @@ func TestOpenAICompatExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testi
 		body, _ := io.ReadAll(r.Body)
 		gotBody = body
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"user","content":[]},{"id":"cmp_1","type":"compaction","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.5","output":[{"id":"msg_1","type":"message","role":"user","content":[]},{"id":"cmp_1","type":"compaction_summary","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
 	}))
 	defer server.Close()
 
@@ -126,6 +126,9 @@ func TestOpenAICompatExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testi
 	}
 	if strings.Contains(body, `"id":"msg_1"`) {
 		t.Fatalf("stream exposed non-compaction history item: %s", body)
+	}
+	if strings.Contains(body, `"type":"compaction_summary"`) {
+		t.Fatalf("stream exposed unnormalized compaction_summary: %s", body)
 	}
 }
 

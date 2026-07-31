@@ -199,6 +199,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if opts.Alt == "responses/compact" {
+		body = normalizeCompactionSummaryOutput(body)
+	}
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
 	// Ensure we at least record the request even if upstream doesn't return usage
 	reporter.EnsurePublished(ctx)

@@ -290,6 +290,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.EnsurePublished(ctx)
 	var param any
 	clientData := applyCodexIdentityExposeResponsePayload(upstreamData, identityState)
+	clientData = normalizeCompactionSummaryOutput(clientData)
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, originalPayload, body, clientData, &param)
 	resp = cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}
 	return resp, nil

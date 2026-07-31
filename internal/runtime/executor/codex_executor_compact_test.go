@@ -15,6 +15,20 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestNormalizeCompactionSummaryOutputPreservesEncryptedContent(t *testing.T) {
+	body := []byte(`{"output":[{"id":"msg_1","type":"message"},{"id":"cmp_1","type":"compaction_summary","encrypted_content":"opaque-state"}]}`)
+	normalized := normalizeCompactionSummaryOutput(body)
+	if got := gjson.GetBytes(normalized, "output.1.type").String(); got != "compaction" {
+		t.Fatalf("type = %q, want compaction; body=%s", got, normalized)
+	}
+	if got := gjson.GetBytes(normalized, "output.1.encrypted_content").String(); got != "opaque-state" {
+		t.Fatalf("encrypted_content = %q, want opaque-state; body=%s", got, normalized)
+	}
+	if got := gjson.GetBytes(normalized, "output.0.type").String(); got != "message" {
+		t.Fatalf("history item type = %q, want message; body=%s", got, normalized)
+	}
+}
+
 func TestCodexExecutorCompactAddsDefaultInstructionsWithoutInjectingImageTool(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -88,7 +102,7 @@ func TestCodexExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		gotBody = body
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.4","output":[{"id":"msg_1","type":"message","role":"user","content":[]},{"id":"cmp_1","type":"compaction","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.4","output":[{"id":"msg_1","type":"message","role":"user","content":[]},{"id":"cmp_1","type":"compaction_summary","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
 	}))
 	defer server.Close()
 
@@ -130,5 +144,8 @@ func TestCodexExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testing.T) {
 	}
 	if bytes.Contains([]byte(body), []byte(`"id":"msg_1"`)) {
 		t.Fatalf("stream exposed non-compaction history item: %s", body)
+	}
+	if bytes.Contains([]byte(body), []byte(`"type":"compaction_summary"`)) {
+		t.Fatalf("stream exposed unnormalized compaction_summary: %s", body)
 	}
 }
