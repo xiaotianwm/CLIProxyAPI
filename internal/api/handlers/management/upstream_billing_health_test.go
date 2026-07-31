@@ -14,6 +14,34 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
+func TestBuildOpenAICompatibilityChatCompletionsURLFollowsBaseURLVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{name: "root", base: "https://example.test", want: "https://example.test/chat/completions"},
+		{name: "root trailing slash", base: "https://example.test/", want: "https://example.test/chat/completions"},
+		{name: "v1", base: "https://example.test/v1", want: "https://example.test/v1/chat/completions"},
+		{name: "v1 trailing slash", base: "https://example.test/v1/", want: "https://example.test/v1/chat/completions"},
+		{name: "api prefix", base: "https://example.test/api", want: "https://example.test/api/chat/completions"},
+		{name: "api v1 prefix", base: "https://example.test/api/v1", want: "https://example.test/api/v1/chat/completions"},
+		{name: "complete endpoint", base: "https://example.test/api/chat/completions?x=1", want: "https://example.test/api/chat/completions"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildOpenAICompatibilityChatCompletionsURL(tt.base)
+			if err != nil {
+				t.Fatalf("build URL: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("URL = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpstreamHealthProbePayloadStaysPlainChatCompletions(t *testing.T) {
 	challenge := upstreamHealthProbeChallenge{
 		Prompt:   "17 + 29 = ?",
@@ -129,7 +157,7 @@ func TestDispatchUpstreamProbesSkipsDuplicateTasksWithoutWaiting(t *testing.T) {
 			billingStarted <- struct{}{}
 			<-release
 			writeTestBillingResponse(w)
-		case "/v1/chat/completions":
+		case "/chat/completions":
 			healthCalls.Add(1)
 			healthStarted <- struct{}{}
 			<-release
@@ -165,7 +193,7 @@ func TestDispatchUpstreamProbesSkipsDuplicateTasksWithoutWaiting(t *testing.T) {
 
 func TestSlowHealthProbeHasNoOverallResponseTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/chat/completions" {
 			http.NotFound(w, r)
 			return
 		}
@@ -192,7 +220,7 @@ func TestBlockedUpstreamDoesNotDelayAnotherUpstreamResult(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/sub2api/billing":
 			writeTestBillingResponse(w)
-		case "/v1/chat/completions":
+		case "/chat/completions":
 			blockedHealthStarted <- struct{}{}
 			<-releaseBlockedHealth
 			writeTestHealthResponse(w, r)
@@ -205,7 +233,7 @@ func TestBlockedUpstreamDoesNotDelayAnotherUpstreamResult(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/sub2api/billing":
 			writeTestBillingResponse(w)
-		case "/v1/chat/completions":
+		case "/chat/completions":
 			writeTestHealthResponse(w, r)
 		default:
 			http.NotFound(w, r)

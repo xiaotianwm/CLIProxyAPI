@@ -1198,12 +1198,12 @@ func buildOpenAICompatibilityChatCompletionsURL(baseURL string) (string, error) 
 	path := strings.TrimRight(parsed.Path, "/")
 	switch {
 	case path == "":
-		path = "/v1/chat/completions"
+		path = "/chat/completions"
 	case strings.HasSuffix(path, "/chat/completions"):
 	case strings.HasSuffix(path, "/v1"):
 		path += "/chat/completions"
 	default:
-		path += "/v1/chat/completions"
+		path += "/chat/completions"
 	}
 	parsed.Path = path
 	return parsed.String(), nil
