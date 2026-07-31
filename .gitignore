@@ -1,10 +1,16 @@
 # Binaries
 cli-proxy-api
 *.exe
+*.exe~
 
 # Configuration
 config.yaml
 .env
+/config.review.yaml
+
+# Local probe and server artifacts
+/tmp-openai.json
+/local-server.*.log
 
 # Generated content
 bin/*

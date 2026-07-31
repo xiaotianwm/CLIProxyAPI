@@ -20,6 +20,11 @@ auths
 logs
 conv
 config.yaml
+config.review.yaml
+tmp-openai.json
+local-server.*.log
+*.exe
+*.exe~
 
 # Development/editor
 bin
