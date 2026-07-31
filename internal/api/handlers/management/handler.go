@@ -61,6 +61,9 @@ type Handler struct {
 	pluginReleaseCacheMu      sync.Mutex
 	pluginReleaseCache        map[string]pluginReleaseCacheEntry
 	upstreamBillingProbeCache *upstreamBillingProbeCache
+	upstreamProbeMu           sync.Mutex
+	upstreamProbeNextToken    uint64
+	upstreamProbeInFlight     map[upstreamProbeTaskKey]upstreamProbeTask
 }
 
 type configReloadSnapshot struct {
@@ -74,13 +77,14 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	envSecret = strings.TrimSpace(envSecret)
 
 	h := &Handler{
-		cfg:                 cfg,
-		configFilePath:      configFilePath,
-		failedAttempts:      make(map[string]*attemptInfo),
-		authManager:         manager,
-		tokenStore:          sdkAuth.GetTokenStore(),
-		allowRemoteOverride: envSecret != "",
-		envSecret:           envSecret,
+		cfg:                   cfg,
+		configFilePath:        configFilePath,
+		failedAttempts:        make(map[string]*attemptInfo),
+		authManager:           manager,
+		tokenStore:            sdkAuth.GetTokenStore(),
+		allowRemoteOverride:   envSecret != "",
+		envSecret:             envSecret,
+		upstreamProbeInFlight: make(map[upstreamProbeTaskKey]upstreamProbeTask),
 	}
 	h.startAttemptCleanup()
 	h.startUpstreamBillingProbeLoop()

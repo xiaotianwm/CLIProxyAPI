@@ -342,6 +342,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == "round-robin"
 		case "upstream-billing-probe.interval-minutes":
 			return node.Value == strconv.Itoa(DefaultUpstreamBillingProbeIntervalMinutes)
+		case "upstream-billing-probe.health-model":
+			return node.Value == DefaultUpstreamHealthProbeModel
 		}
 	}
 
@@ -350,6 +352,16 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 		switch fullPath {
 		case "error-logs-max-files":
 			return node.Value == "10"
+		}
+	}
+
+	// Check boolean defaults
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+		switch fullPath {
+		case "upstream-billing-probe.health-enabled":
+			return node.Value == strconv.FormatBool(DefaultUpstreamHealthProbeEnabled)
+		case "upstream-billing-probe.auto-priority-enabled":
+			return node.Value == strconv.FormatBool(DefaultUpstreamAutoPriorityEnabled)
 		}
 	}
 

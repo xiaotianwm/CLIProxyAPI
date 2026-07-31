@@ -6,4 +6,7 @@ const (
 	DefaultPprofAddr                           = "127.0.0.1:8316"
 	DefaultAuthDir                             = "~/.cli-proxy-api"
 	DefaultUpstreamBillingProbeIntervalMinutes = 30
+	DefaultUpstreamHealthProbeEnabled          = false
+	DefaultUpstreamHealthProbeModel            = "gpt-5.5"
+	DefaultUpstreamAutoPriorityEnabled         = false
 )

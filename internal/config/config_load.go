@@ -78,6 +78,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.UpstreamBillingProbe.IntervalMinutes = DefaultUpstreamBillingProbeIntervalMinutes
+	cfg.UpstreamBillingProbe.HealthEnabled = DefaultUpstreamHealthProbeEnabled
+	cfg.UpstreamBillingProbe.HealthModel = DefaultUpstreamHealthProbeModel
+	cfg.UpstreamBillingProbe.AutoPriorityEnabled = DefaultUpstreamAutoPriorityEnabled
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
@@ -130,6 +133,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.UpstreamBillingProbe.IntervalMinutes <= 0 {
 		cfg.UpstreamBillingProbe.IntervalMinutes = DefaultUpstreamBillingProbeIntervalMinutes
+	}
+	cfg.UpstreamBillingProbe.HealthModel = strings.TrimSpace(cfg.UpstreamBillingProbe.HealthModel)
+	if cfg.UpstreamBillingProbe.HealthModel == "" {
+		cfg.UpstreamBillingProbe.HealthModel = DefaultUpstreamHealthProbeModel
 	}
 
 	if cfg.LogsMaxTotalSizeMB < 0 {

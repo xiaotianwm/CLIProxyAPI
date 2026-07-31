@@ -36,6 +36,13 @@ remote-management:
 upstream-billing-probe:
   # Background refresh interval for upstream rate probing, in minutes.
   interval-minutes: 30
+  # Whether refreshes also send a real model request to test liveness.
+  # This consumes upstream tokens, so it is disabled by default.
+  health-enabled: false
+  # Model used when health-enabled is true.
+  health-model: gpt-5.5
+  # Whether successful health probes automatically update provider priority.
+  auto-priority-enabled: false
 
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"

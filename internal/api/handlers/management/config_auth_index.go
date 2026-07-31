@@ -261,6 +261,7 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -296,7 +297,6 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 			response.AuthIndex = liveIndexByID[id]
 		} else {
 			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
-			billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 			for j := range entry.APIKeyEntries {
 				apiKeyEntry := entry.APIKeyEntries[j]
 				id, _ := idGen.Next(idKind, apiKeyEntry.APIKey, entry.BaseURL, apiKeyEntry.ProxyURL)

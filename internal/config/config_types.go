@@ -192,6 +192,13 @@ type UpstreamBillingProbe struct {
 	// IntervalMinutes controls how often the background probe refreshes results.
 	// Zero or negative values fall back to the default.
 	IntervalMinutes int `yaml:"interval-minutes"`
+	// HealthEnabled controls whether refreshes also send a real model request.
+	// Disabled by default because this consumes upstream tokens.
+	HealthEnabled bool `yaml:"health-enabled"`
+	// HealthModel is the OpenAI-compatible model used for lightweight upstream liveness probes.
+	HealthModel string `yaml:"health-model"`
+	// AutoPriorityEnabled updates OpenAI-compatible provider priority from health probe results.
+	AutoPriorityEnabled bool `yaml:"auto-priority-enabled"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
