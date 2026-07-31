@@ -70,8 +70,8 @@ func TestCodexExecutorCompactAddsDefaultInstructionsWithoutInjectingImageTool(t 
 				t.Fatalf("compact request injected image_generation tool: %s", gotBody)
 			}
 			input := gjson.GetBytes(gotBody, "input").Array()
-			if len(input) != 2 || input[1].Get("type").String() != "compaction_trigger" {
-				t.Fatalf("compact input order changed: %s", gotBody)
+			if len(input) != 1 || input[0].Get("type").String() != "message" {
+				t.Fatalf("compact history changed or trigger was retained: %s", gotBody)
 			}
 			if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
 				t.Fatalf("payload = %s", string(resp.Payload))
@@ -82,10 +82,13 @@ func TestCodexExecutorCompactAddsDefaultInstructionsWithoutInjectingImageTool(t 
 
 func TestCodexExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testing.T) {
 	var gotPath string
+	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.4","output":[{"type":"compaction","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"id":"resp_compact_1","object":"response.compaction","model":"gpt-5.4","output":[{"id":"msg_1","type":"message","role":"user","content":[]},{"id":"cmp_1","type":"compaction","encrypted_content":"opaque-state"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
 	}))
 	defer server.Close()
 
@@ -108,6 +111,9 @@ func TestCodexExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testing.T) {
 	if gotPath != "/responses/compact" {
 		t.Fatalf("path = %q, want /responses/compact", gotPath)
 	}
+	if xaiInputHasItemType(gotBody, "compaction_trigger") {
+		t.Fatalf("compaction_trigger reached compact endpoint: %s", gotBody)
+	}
 
 	var out bytes.Buffer
 	for chunk := range stream.Chunks {
@@ -121,5 +127,8 @@ func TestCodexExecutorCompactionTriggerStreamUsesCompactEndpoint(t *testing.T) {
 		!bytes.Contains([]byte(body), []byte(`"type":"compaction"`)) ||
 		!bytes.Contains([]byte(body), []byte(`"encrypted_content":"opaque-state"`)) {
 		t.Fatalf("stream did not expose compaction item: %s", body)
+	}
+	if bytes.Contains([]byte(body), []byte(`"id":"msg_1"`)) {
+		t.Fatalf("stream exposed non-compaction history item: %s", body)
 	}
 }

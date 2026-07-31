@@ -339,10 +339,15 @@ func xaiBuildCompactionBaseResponse(prepared *xaiPreparedRequest, compactData []
 }
 
 func xaiCompactionOutputItem(compactData []byte, responseID string) []byte {
-	itemResult := gjson.GetBytes(compactData, "output.0")
 	item := []byte(`{"type":"compaction"}`)
-	if itemResult.Exists() && itemResult.Type == gjson.JSON {
-		item = []byte(itemResult.Raw)
+	for _, itemResult := range gjson.GetBytes(compactData, "output").Array() {
+		if itemResult.Get("type").String() != "compaction" {
+			continue
+		}
+		if itemResult.Type == gjson.JSON {
+			item = []byte(itemResult.Raw)
+		}
+		break
 	}
 	if !gjson.GetBytes(item, "type").Exists() {
 		item, _ = sjson.SetBytes(item, "type", "compaction")
