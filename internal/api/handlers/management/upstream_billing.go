@@ -483,11 +483,13 @@ func (h *Handler) GetUpstreamBillingProbe(c *gin.Context) {
 
 func (h *Handler) PutUpstreamBillingProbe(c *gin.Context) {
 	var body struct {
-		IntervalMinutes     *int    `json:"interval-minutes"`
-		HealthEnabled       *bool   `json:"health-enabled"`
-		HealthModel         *string `json:"health-model"`
-		AutoPriorityEnabled *bool   `json:"auto-priority-enabled"`
-		Value               *struct {
+		ManualAuthIndex      *string  `json:"auth-index"`
+		ManualRateMultiplier *float64 `json:"effective-rate-multiplier"`
+		IntervalMinutes      *int     `json:"interval-minutes"`
+		HealthEnabled        *bool    `json:"health-enabled"`
+		HealthModel          *string  `json:"health-model"`
+		AutoPriorityEnabled  *bool    `json:"auto-priority-enabled"`
+		Value                *struct {
 			IntervalMinutes     *int    `json:"interval-minutes"`
 			HealthEnabled       *bool   `json:"health-enabled"`
 			HealthModel         *string `json:"health-model"`
@@ -496,6 +498,41 @@ func (h *Handler) PutUpstreamBillingProbe(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if body.ManualAuthIndex != nil || body.ManualRateMultiplier != nil {
+		if body.ManualAuthIndex == nil || body.ManualRateMultiplier == nil || *body.ManualRateMultiplier < 0 || math.IsNaN(*body.ManualRateMultiplier) || math.IsInf(*body.ManualRateMultiplier, 0) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid manual multiplier"})
+			return
+		}
+		authIndex := strings.TrimSpace(*body.ManualAuthIndex)
+		h.mu.Lock()
+		manager := h.authManager
+		h.mu.Unlock()
+		var auth *coreauth.Auth
+		if manager != nil {
+			for _, candidate := range manager.List() {
+				if candidate != nil && strings.TrimSpace(candidate.EnsureIndex()) == authIndex {
+					auth = candidate
+					break
+				}
+			}
+		}
+		if auth == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "upstream auth not found"})
+			return
+		}
+		entry, _ := h.upstreamBillingProbeEntryForAuth(auth)
+		value := *body.ManualRateMultiplier
+		entry.Status = "ok"
+		entry.Error = ""
+		entry.ObservedAt = time.Now().UTC()
+		entry.GroupRateMultiplier = &value
+		entry.ResolvedRateMultiplier = &value
+		entry.EffectiveRateMultiplier = &value
+		h.storeUpstreamBillingProbeResult(entry)
+		stored, _ := h.previousUpstreamBillingProbeEntry(authIndex)
+		c.JSON(http.StatusOK, stored)
 		return
 	}
 	interval := h.upstreamBillingProbeIntervalMinutes()

@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
@@ -155,6 +157,58 @@ func TestNewUpstreamHealthProbeChallenge(t *testing.T) {
 	}
 	if challenge.CacheKey == "" {
 		t.Fatal("health probe must use an isolated cache key")
+	}
+}
+
+func TestPutUpstreamBillingProbeStoresManualRateAsSuccessfulProbe(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth, err := manager.Register(context.Background(), testUpstreamProbeAuth("https://example.test/v1"))
+	if err != nil {
+		t.Fatalf("register test auth: %v", err)
+	}
+	authIndex := auth.EnsureIndex()
+	checkedAt := time.Now().UTC().Add(-time.Minute)
+	h := &Handler{
+		authManager: manager,
+		upstreamBillingProbeCache: &upstreamBillingProbeCache{entries: []upstreamBillingProbeEntry{{
+			AuthIndex: authIndex,
+			Status:    "failed",
+			HealthHistory: []upstreamHealthProbeSample{{
+				Status:    "ok",
+				LatencyMS: 25,
+				CheckedAt: checkedAt,
+			}},
+		}}},
+	}
+	body := []byte(fmt.Sprintf(`{"auth-index":%q,"effective-rate-multiplier":1.25}`, authIndex))
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/upstream-billing-probe", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutUpstreamBillingProbe(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var got upstreamBillingProbeEntry
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Status != "ok" || got.Error != "" {
+		t.Fatalf("status = %q error = %q, want successful probe", got.Status, got.Error)
+	}
+	for name, value := range map[string]*float64{
+		"group":     got.GroupRateMultiplier,
+		"resolved":  got.ResolvedRateMultiplier,
+		"effective": got.EffectiveRateMultiplier,
+	} {
+		if value == nil || *value != 1.25 {
+			t.Fatalf("%s multiplier = %v, want 1.25", name, value)
+		}
+	}
+	if len(got.HealthHistory) != 1 || !got.HealthHistory[0].CheckedAt.Equal(checkedAt) {
+		t.Fatalf("health history was not preserved: %#v", got.HealthHistory)
 	}
 }
 
