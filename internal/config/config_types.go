@@ -197,7 +197,7 @@ type UpstreamBillingProbe struct {
 	HealthEnabled bool `yaml:"health-enabled"`
 	// HealthModel is the OpenAI-compatible model used for lightweight upstream liveness probes.
 	HealthModel string `yaml:"health-model"`
-	// AutoPriorityEnabled updates OpenAI-compatible provider priority from health probe results.
+	// AutoPriorityEnabled updates provider priority by health tier, then by effective rate multiplier.
 	AutoPriorityEnabled bool `yaml:"auto-priority-enabled"`
 }
 

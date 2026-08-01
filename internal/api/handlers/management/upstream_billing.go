@@ -31,9 +31,12 @@ const (
 	upstreamHealthProbeHistoryLimit            = 30
 	upstreamBillingProbeMaxBodyBytes           = 64 * 1024
 	upstreamHealthFastLatencyMS                = 10_000
-	upstreamHealthExcellentPriority            = 100
-	upstreamHealthNormalPriority               = 50
+	upstreamHealthExcellentPriority            = 2000
+	upstreamHealthNormalPriority               = 1000
 	upstreamHealthFailedPriority               = 1
+	upstreamRatePriorityMaxScore               = 999
+	upstreamRatePriorityMinMultiplier          = 0.0001
+	upstreamRatePriorityMaxMultiplier          = 10.0
 	upstreamHealthProbeInstructions            = "Answer the arithmetic health check. Return only the integer."
 	upstreamHealthProbeOperandMax              = 50
 	upstreamHealthProbeMaxTokens               = 8
@@ -641,6 +644,9 @@ func (h *Handler) PutUpstreamBillingProbe(c *gin.Context) {
 		entry.EffectiveRateMultiplier = &value
 		h.storeUpstreamBillingProbeResult(entry)
 		stored, _ := h.previousUpstreamBillingProbeEntry(authIndex)
+		if h.upstreamAutoPriorityEnabled() {
+			h.applyUpstreamHealthPriorities(context.Background(), []upstreamBillingProbeEntry{stored})
+		}
 		c.JSON(http.StatusOK, stored)
 		return
 	}
@@ -969,7 +975,11 @@ func (h *Handler) runUpstreamProbeTask(ctx context.Context, token uint64, work u
 	if work.Key.Kind == upstreamProbeBilling {
 		entry, ok := h.probeUpstreamBillingEntry(ctx, work.Auth)
 		if ok && h.upstreamProbeResultIsCurrent(work, token) {
-			h.commitUpstreamBillingProbeResult(work, token, entry)
+			if h.commitUpstreamBillingProbeResult(work, token, entry) && h.upstreamAutoPriorityEnabled() {
+				if stored, exists := h.previousUpstreamBillingProbeEntry(work.Key.AuthIndex); exists {
+					h.applyUpstreamHealthPriorities(context.Background(), []upstreamBillingProbeEntry{stored})
+				}
+			}
 		}
 		return
 	}
@@ -981,10 +991,9 @@ func (h *Handler) runUpstreamProbeTask(ctx context.Context, token uint64, work u
 		return
 	}
 	if h.upstreamAutoPriorityEnabled() {
-		h.applyUpstreamHealthPriorities(context.Background(), []upstreamBillingProbeEntry{{
-			AuthIndex:     work.Key.AuthIndex,
-			HealthHistory: []upstreamHealthProbeSample{sample},
-		}})
+		if stored, exists := h.previousUpstreamBillingProbeEntry(work.Key.AuthIndex); exists {
+			h.applyUpstreamHealthPriorities(context.Background(), []upstreamBillingProbeEntry{stored})
+		}
 	}
 }
 
@@ -1069,14 +1078,24 @@ func (h *Handler) upstreamHealthProbeModel() string {
 	return h.cfg.UpstreamBillingProbe.HealthModel
 }
 
-func upstreamHealthPriority(sample upstreamHealthProbeSample) int {
+func upstreamRatePriorityScore(multiplier *float64) int {
+	if multiplier == nil || math.IsNaN(*multiplier) || math.IsInf(*multiplier, 0) || *multiplier < 0 {
+		return 0
+	}
+	value := math.Max(upstreamRatePriorityMinMultiplier, math.Min(*multiplier, upstreamRatePriorityMaxMultiplier))
+	span := math.Log10(upstreamRatePriorityMaxMultiplier) - math.Log10(upstreamRatePriorityMinMultiplier)
+	normalized := (math.Log10(upstreamRatePriorityMaxMultiplier) - math.Log10(value)) / span
+	return int(math.Round(normalized * upstreamRatePriorityMaxScore))
+}
+
+func upstreamHealthPriority(sample upstreamHealthProbeSample, multiplier *float64) int {
 	if !strings.EqualFold(strings.TrimSpace(sample.Status), "ok") {
 		return upstreamHealthFailedPriority
 	}
 	if sample.LatencyMS > upstreamHealthFastLatencyMS {
-		return upstreamHealthNormalPriority
+		return upstreamHealthNormalPriority + upstreamRatePriorityScore(multiplier)
 	}
-	return upstreamHealthExcellentPriority
+	return upstreamHealthExcellentPriority + upstreamRatePriorityScore(multiplier)
 }
 
 func (h *Handler) reconcileDisabledUpstreamPriorities(ctx context.Context) {
@@ -1159,7 +1178,7 @@ func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []u
 	for _, entry := range entries {
 		if authIndex := strings.TrimSpace(entry.AuthIndex); authIndex != "" {
 			if sample := firstHealthProbeSample(entry.HealthHistory); sample != nil {
-				priorityByAuthIndex[authIndex] = upstreamHealthPriority(*sample)
+				priorityByAuthIndex[authIndex] = upstreamHealthPriority(*sample, entry.EffectiveRateMultiplier)
 			}
 		}
 	}
@@ -1177,7 +1196,7 @@ func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []u
 	h.mu.Unlock()
 	if manager != nil {
 		for _, auth := range manager.List() {
-			if auth == nil {
+			if auth == nil || !h.upstreamAuthEnabled(auth) {
 				continue
 			}
 			provider := strings.ToLower(strings.TrimSpace(auth.Provider))
@@ -1240,6 +1259,9 @@ func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []u
 	idGen := synthesizer.NewStableIDGenerator()
 	for i := range normalized {
 		entry := normalized[i]
+		if entry.Disabled {
+			continue
+		}
 		providerName := strings.ToLower(strings.TrimSpace(entry.Name))
 		if providerName == "" {
 			providerName = "openai-compatibility"

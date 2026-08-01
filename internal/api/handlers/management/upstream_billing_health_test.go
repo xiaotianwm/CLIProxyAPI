@@ -17,6 +17,8 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
+func float64Ptr(value float64) *float64 { return &value }
+
 func TestBuildOpenAICompatibilityChatCompletionsURLFollowsBaseURLVersion(t *testing.T) {
 	tests := []struct {
 		name string
@@ -245,6 +247,50 @@ func TestPutUpstreamBillingProbeFindsAuthWithoutRuntimeIndex(t *testing.T) {
 	}
 }
 
+func TestPutUpstreamBillingProbeManualRateRecalculatesPriority(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "manual-rate-priority",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"api_key":      "test-key",
+			"config_index": "0",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	authIndex := auth.EnsureIndex()
+	h := &Handler{
+		cfg: &config.Config{
+			UpstreamBillingProbe: config.UpstreamBillingProbe{AutoPriorityEnabled: true},
+			ClaudeKey:            []config.ClaudeKey{{APIKey: "test-key"}},
+		},
+		authManager: manager,
+		upstreamBillingProbeCache: &upstreamBillingProbeCache{entries: []upstreamBillingProbeEntry{{
+			AuthIndex: authIndex,
+			HealthHistory: []upstreamHealthProbeSample{{
+				Status:    "ok",
+				LatencyMS: 100,
+			}},
+		}}},
+	}
+	body := []byte(fmt.Sprintf(`{"auth-index":%q,"effective-rate-multiplier":1}`, authIndex))
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/upstream-billing-probe", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutUpstreamBillingProbe(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if got := h.cfg.ClaudeKey[0].Priority; got != 2200 {
+		t.Fatalf("priority after manual rate = %d, want 2200", got)
+	}
+}
+
 func TestSuccessfulUpstreamHealthProbeResponse(t *testing.T) {
 	for _, body := range [][]byte{
 		[]byte(`{"choices":[{"message":{"content":"46"}}]}`),
@@ -298,6 +344,93 @@ func TestCachedTokensAreMetadataForSuccessfulHealthResponse(t *testing.T) {
 	}
 	if got := upstreamHealthProbeCachedTokens(body); got != 3840 {
 		t.Fatalf("cached tokens = %d, want 3840", got)
+	}
+}
+
+func TestUpstreamRatePriorityScoreUsesLogarithmicRange(t *testing.T) {
+	tests := []struct {
+		name       string
+		multiplier *float64
+		want       int
+	}{
+		{name: "missing", multiplier: nil, want: 0},
+		{name: "below minimum", multiplier: float64Ptr(0.00001), want: 999},
+		{name: "minimum", multiplier: float64Ptr(0.0001), want: 999},
+		{name: "one thousandth", multiplier: float64Ptr(0.001), want: 799},
+		{name: "one hundredth", multiplier: float64Ptr(0.01), want: 599},
+		{name: "one tenth", multiplier: float64Ptr(0.1), want: 400},
+		{name: "one", multiplier: float64Ptr(1), want: 200},
+		{name: "ten", multiplier: float64Ptr(10), want: 0},
+		{name: "above maximum", multiplier: float64Ptr(100), want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := upstreamRatePriorityScore(tt.multiplier); got != tt.want {
+				t.Fatalf("score = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpstreamHealthPriorityKeepsHealthTiersSeparate(t *testing.T) {
+	cheap := 0.0001
+	expensive := 10.0
+	fast := upstreamHealthProbeSample{Status: "ok", LatencyMS: upstreamHealthFastLatencyMS}
+	slow := upstreamHealthProbeSample{Status: "ok", LatencyMS: upstreamHealthFastLatencyMS + 1}
+	failed := upstreamHealthProbeSample{Status: "failed"}
+
+	if got := upstreamHealthPriority(fast, &expensive); got != 2000 {
+		t.Fatalf("expensive excellent priority = %d, want 2000", got)
+	}
+	if got := upstreamHealthPriority(fast, &cheap); got != 2999 {
+		t.Fatalf("cheap excellent priority = %d, want 2999", got)
+	}
+	if got := upstreamHealthPriority(slow, &expensive); got != 1000 {
+		t.Fatalf("expensive normal priority = %d, want 1000", got)
+	}
+	if got := upstreamHealthPriority(slow, &cheap); got != 1999 {
+		t.Fatalf("cheap normal priority = %d, want 1999", got)
+	}
+	if got := upstreamHealthPriority(failed, &cheap); got != 1 {
+		t.Fatalf("failed priority = %d, want 1", got)
+	}
+	if upstreamHealthPriority(slow, &cheap) >= upstreamHealthPriority(fast, &expensive) {
+		t.Fatal("normal tier must never overtake excellent tier")
+	}
+}
+
+func TestApplyUpstreamHealthPrioritiesUsesEffectiveMultiplier(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "claude-rate-priority",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"api_key":      "test-key",
+			"config_index": "0",
+		},
+	}
+	registered, err := manager.Register(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	multiplier := 1.0
+	h := &Handler{
+		cfg: &config.Config{
+			UpstreamBillingProbe: config.UpstreamBillingProbe{AutoPriorityEnabled: true},
+			ClaudeKey:            []config.ClaudeKey{{APIKey: "test-key"}},
+		},
+		authManager: manager,
+	}
+	h.applyUpstreamHealthPriorities(context.Background(), []upstreamBillingProbeEntry{{
+		AuthIndex:               registered.EnsureIndex(),
+		EffectiveRateMultiplier: &multiplier,
+		HealthHistory: []upstreamHealthProbeSample{{
+			Status:    "ok",
+			LatencyMS: 100,
+		}},
+	}})
+	if got := h.cfg.ClaudeKey[0].Priority; got != 2200 {
+		t.Fatalf("configured priority = %d, want 2200", got)
 	}
 }
 
