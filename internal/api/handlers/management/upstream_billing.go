@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -220,6 +221,20 @@ func isOpenAICompatibilityAuth(auth *coreauth.Auth) bool {
 	return strings.TrimSpace(auth.Attributes["compat_name"]) != "" || strings.TrimSpace(auth.Attributes["provider_key"]) != ""
 }
 
+// isEligibleUpstreamAuth accepts configuration-backed API keys from every
+// native protocol. OAuth/file-backed credentials do not expose a stable
+// upstream api_key and are intentionally left out.
+func isEligibleUpstreamAuth(auth *coreauth.Auth) bool {
+	if auth == nil || auth.Disabled || auth.Status == coreauth.StatusDisabled {
+		return false
+	}
+	return strings.TrimSpace(auth.Attributes["api_key"]) != ""
+}
+
+func isEligibleUpstreamBillingAuth(auth *coreauth.Auth) bool {
+	return isEligibleUpstreamAuth(auth) && strings.TrimSpace(auth.Attributes["base_url"]) != ""
+}
+
 func (h *Handler) startUpstreamBillingProbeLoop() {
 	go func() {
 		// ponytail: one background loop is enough; add lifecycle stop only if handlers become short-lived.
@@ -271,7 +286,7 @@ func (h *Handler) upstreamBillingProbeEntryForAuth(auth *coreauth.Auth) (upstrea
 	if h == nil || auth == nil {
 		return upstreamBillingProbeEntry{}, false
 	}
-	if !isOpenAICompatibilityAuth(auth) {
+	if !isEligibleUpstreamAuth(auth) {
 		return upstreamBillingProbeEntry{}, false
 	}
 	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
@@ -279,7 +294,7 @@ func (h *Handler) upstreamBillingProbeEntryForAuth(auth *coreauth.Auth) (upstrea
 	}
 	key := strings.TrimSpace(auth.Attributes["api_key"])
 	baseURL := strings.TrimSpace(auth.Attributes["base_url"])
-	if key == "" || baseURL == "" {
+	if key == "" {
 		return upstreamBillingProbeEntry{}, false
 	}
 	authIndex := strings.TrimSpace(auth.EnsureIndex())
@@ -564,14 +579,12 @@ func (h *Handler) dispatchUpstreamProbes() upstreamProbeDispatchResult {
 		if authIndex == "" {
 			continue
 		}
-		billingKey := upstreamProbeTaskKey{AuthIndex: authIndex, Kind: upstreamProbeBilling}
-		billingFingerprint := upstreamProbeFingerprint(auth, upstreamProbeBilling, "")
-		valid[billingKey] = billingFingerprint
-		works = append(works, upstreamProbeWork{
-			Key:         billingKey,
-			Auth:        auth,
-			Fingerprint: billingFingerprint,
-		})
+		if isEligibleUpstreamBillingAuth(auth) {
+			billingKey := upstreamProbeTaskKey{AuthIndex: authIndex, Kind: upstreamProbeBilling}
+			billingFingerprint := upstreamProbeFingerprint(auth, upstreamProbeBilling, "")
+			valid[billingKey] = billingFingerprint
+			works = append(works, upstreamProbeWork{Key: billingKey, Auth: auth, Fingerprint: billingFingerprint})
+		}
 		if healthEnabled {
 			healthKey := upstreamProbeTaskKey{AuthIndex: authIndex, Kind: upstreamProbeHealth}
 			healthFingerprint := upstreamProbeFingerprint(auth, upstreamProbeHealth, healthModel)
@@ -604,14 +617,19 @@ func (h *Handler) dispatchUpstreamProbes() upstreamProbeDispatchResult {
 }
 
 func isEligibleUpstreamProbeAuth(auth *coreauth.Auth) bool {
-	if auth == nil || !isOpenAICompatibilityAuth(auth) {
+	if !isEligibleUpstreamAuth(auth) {
 		return false
 	}
-	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
+	if strings.TrimSpace(auth.Attributes["base_url"]) != "" {
+		return true
+	}
+	// These native API-key protocols have stable official defaults.
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "claude", "gemini", "gemini-interactions", "codex", "xai", "vertex":
+		return true
+	default:
 		return false
 	}
-	return strings.TrimSpace(auth.Attributes["api_key"]) != "" &&
-		strings.TrimSpace(auth.Attributes["base_url"]) != ""
 }
 
 func upstreamProbeFingerprint(auth *coreauth.Auth, kind upstreamProbeKind, healthModel string) [32]byte {
@@ -624,8 +642,21 @@ func upstreamProbeFingerprint(auth *coreauth.Auth, kind upstreamProbeKind, healt
 		strings.ToLower(strings.TrimSpace(auth.Provider)),
 		strings.TrimSpace(auth.Attributes["base_url"]),
 		strings.TrimSpace(auth.Attributes["api_key"]),
+		strings.TrimSpace(auth.Attributes["models_hash"]),
 		strings.TrimSpace(auth.ProxyURL),
 		string(kind),
+	}
+	if len(auth.Attributes) > 0 {
+		headerKeys := make([]string, 0)
+		for key := range auth.Attributes {
+			if strings.HasPrefix(key, "header:") {
+				headerKeys = append(headerKeys, key)
+			}
+		}
+		sort.Strings(headerKeys)
+		for _, key := range headerKeys {
+			parts = append(parts, key, strings.TrimSpace(auth.Attributes[key]))
+		}
 	}
 	if kind == upstreamProbeHealth {
 		parts = append(parts, strings.TrimSpace(healthModel))
@@ -840,6 +871,30 @@ func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []u
 		return
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	type nativePriorityTarget struct {
+		provider    string
+		configIndex int
+	}
+	nativeTargets := make(map[string]nativePriorityTarget)
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager != nil {
+		for _, auth := range manager.List() {
+			if auth == nil {
+				continue
+			}
+			provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+			if provider != "gemini" && provider != "gemini-interactions" && provider != "claude" && provider != "codex" && provider != "xai" && provider != "vertex" {
+				continue
+			}
+			idx, err := strconv.Atoi(strings.TrimSpace(auth.Attributes["config_index"]))
+			if err != nil || idx < 0 {
+				continue
+			}
+			nativeTargets[strings.TrimSpace(auth.EnsureIndex())] = nativePriorityTarget{provider: provider, configIndex: idx}
+		}
+	}
 
 	h.mu.Lock()
 	if h.cfg == nil || !h.cfg.UpstreamBillingProbe.AutoPriorityEnabled {
@@ -847,6 +902,44 @@ func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []u
 		return
 	}
 	changed := false
+	for authIndex, priority := range priorityByAuthIndex {
+		target, ok := nativeTargets[authIndex]
+		if !ok {
+			continue
+		}
+		switch target.provider {
+		case "gemini":
+			if target.configIndex < len(h.cfg.GeminiKey) && h.cfg.GeminiKey[target.configIndex].Priority != priority {
+				h.cfg.GeminiKey[target.configIndex].Priority = priority
+				changed = true
+			}
+		case "gemini-interactions":
+			if target.configIndex < len(h.cfg.InteractionsKey) && h.cfg.InteractionsKey[target.configIndex].Priority != priority {
+				h.cfg.InteractionsKey[target.configIndex].Priority = priority
+				changed = true
+			}
+		case "claude":
+			if target.configIndex < len(h.cfg.ClaudeKey) && h.cfg.ClaudeKey[target.configIndex].Priority != priority {
+				h.cfg.ClaudeKey[target.configIndex].Priority = priority
+				changed = true
+			}
+		case "codex":
+			if target.configIndex < len(h.cfg.CodexKey) && h.cfg.CodexKey[target.configIndex].Priority != priority {
+				h.cfg.CodexKey[target.configIndex].Priority = priority
+				changed = true
+			}
+		case "xai":
+			if target.configIndex < len(h.cfg.XAIKey) && h.cfg.XAIKey[target.configIndex].Priority != priority {
+				h.cfg.XAIKey[target.configIndex].Priority = priority
+				changed = true
+			}
+		case "vertex":
+			if target.configIndex < len(h.cfg.VertexCompatAPIKey) && h.cfg.VertexCompatAPIKey[target.configIndex].Priority != priority {
+				h.cfg.VertexCompatAPIKey[target.configIndex].Priority = priority
+				changed = true
+			}
+		}
+	}
 	normalized := normalizedOpenAICompatibilityEntries(h.cfg.OpenAICompatibility)
 	idGen := synthesizer.NewStableIDGenerator()
 	for i := range normalized {
@@ -899,7 +992,7 @@ func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []u
 }
 
 func (h *Handler) probeUpstreamHealth(ctx context.Context, auth *coreauth.Auth, model string) (upstreamHealthProbeSample, bool) {
-	if h == nil || auth == nil || !isOpenAICompatibilityAuth(auth) {
+	if h == nil || !isEligibleUpstreamAuth(auth) {
 		return upstreamHealthProbeSample{}, false
 	}
 	if auth.Disabled || auth.Status == coreauth.StatusDisabled {
@@ -907,21 +1000,14 @@ func (h *Handler) probeUpstreamHealth(ctx context.Context, auth *coreauth.Auth, 
 	}
 	key := strings.TrimSpace(auth.Attributes["api_key"])
 	baseURL := strings.TrimSpace(auth.Attributes["base_url"])
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = defaultUpstreamHealthProbeModel
-	}
-	if key == "" || baseURL == "" {
+	model = h.resolveUpstreamHealthProbeModel(auth, model)
+	if key == "" {
 		return upstreamHealthProbeSample{}, false
 	}
 	sample := upstreamHealthProbeSample{Status: "failed", Model: model, CheckedAt: time.Now().UTC()}
-	reqURL, err := buildOpenAICompatibilityChatCompletionsURL(baseURL)
-	if err != nil {
-		sample.Error = "request-build-failed"
-		return sample, true
-	}
+	reqURL, protocol := buildUpstreamHealthProbeURL(auth, baseURL, model)
 	challenge := newUpstreamHealthProbeChallenge()
-	bodyPayload := upstreamHealthProbePayload(model, challenge)
+	bodyPayload := upstreamHealthProbePayloadForProtocol(protocol, model, challenge)
 	body, err := json.Marshal(bodyPayload)
 	if err != nil {
 		sample.Error = "request-build-failed"
@@ -934,7 +1020,7 @@ func (h *Handler) probeUpstreamHealth(ctx context.Context, auth *coreauth.Auth, 
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	setUpstreamHealthProbeHeaders(req, auth, key, protocol)
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Pragma", "no-cache")
 	client := &http.Client{}
@@ -965,7 +1051,7 @@ func (h *Handler) probeUpstreamHealth(ctx context.Context, auth *coreauth.Auth, 
 		sample.Error = fmt.Sprintf("http-%d", resp.StatusCode)
 		return sample, true
 	}
-	if len(responseBody) > upstreamBillingProbeMaxBodyBytes || !isSuccessfulUpstreamHealthProbeResponse(responseBody, challenge.Expected) {
+	if len(responseBody) > upstreamBillingProbeMaxBodyBytes || !isSuccessfulUpstreamHealthProbeResponseForProtocol(responseBody, challenge.Expected, protocol) {
 		sample.Error = "unexpected-response"
 		return sample, true
 	}
@@ -975,6 +1061,165 @@ func (h *Handler) probeUpstreamHealth(ctx context.Context, auth *coreauth.Auth, 
 	sample.CachedTokens = upstreamHealthProbeCachedTokens(responseBody)
 	sample.Status = "ok"
 	return sample, true
+}
+
+func (h *Handler) resolveUpstreamHealthProbeModel(auth *coreauth.Auth, fallback string) string {
+	fallback = strings.TrimSpace(fallback)
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	idx, _ := strconv.Atoi(strings.TrimSpace(auth.Attributes["config_index"]))
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg != nil && idx >= 0 {
+		var name string
+		switch provider {
+		case "gemini":
+			if idx < len(h.cfg.GeminiKey) && len(h.cfg.GeminiKey[idx].Models) > 0 {
+				name = h.cfg.GeminiKey[idx].Models[0].Name
+			}
+		case "gemini-interactions":
+			if idx < len(h.cfg.InteractionsKey) && len(h.cfg.InteractionsKey[idx].Models) > 0 {
+				name = h.cfg.InteractionsKey[idx].Models[0].Name
+			}
+		case "claude":
+			if idx < len(h.cfg.ClaudeKey) && len(h.cfg.ClaudeKey[idx].Models) > 0 {
+				name = h.cfg.ClaudeKey[idx].Models[0].Name
+			}
+		case "codex":
+			if idx < len(h.cfg.CodexKey) && len(h.cfg.CodexKey[idx].Models) > 0 {
+				name = h.cfg.CodexKey[idx].Models[0].Name
+			}
+		case "xai":
+			if idx < len(h.cfg.XAIKey) && len(h.cfg.XAIKey[idx].Models) > 0 {
+				name = h.cfg.XAIKey[idx].Models[0].Name
+			}
+		case "vertex":
+			if idx < len(h.cfg.VertexCompatAPIKey) && len(h.cfg.VertexCompatAPIKey[idx].Models) > 0 {
+				name = h.cfg.VertexCompatAPIKey[idx].Models[0].Name
+			}
+		}
+		if name = strings.TrimSpace(name); name != "" {
+			return name
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return defaultUpstreamHealthProbeModel
+}
+
+func upstreamProtocol(auth *coreauth.Auth) string {
+	if auth == nil {
+		return "openai"
+	}
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "codex":
+		return "responses"
+	case "xai":
+		return "xai-responses"
+	case "claude":
+		return "claude"
+	case "gemini":
+		return "gemini"
+	case "gemini-interactions":
+		return "interactions"
+	case "vertex":
+		return "vertex"
+	default:
+		return "openai"
+	}
+}
+
+func buildUpstreamHealthProbeURL(auth *coreauth.Auth, baseURL, model string) (string, string) {
+	protocol := upstreamProtocol(auth)
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		switch protocol {
+		case "responses":
+			base = "https://chatgpt.com/backend-api/codex"
+		case "xai-responses":
+			base = "https://api.x.ai/v1"
+		case "claude":
+			base = "https://api.anthropic.com"
+		case "gemini", "interactions":
+			base = "https://generativelanguage.googleapis.com"
+		case "vertex":
+			base = "https://aiplatform.googleapis.com"
+		}
+	}
+	switch protocol {
+	case "responses", "xai-responses":
+		return appendUpstreamPath(base, "/responses"), protocol
+	case "claude":
+		return appendUpstreamPath(base, "/v1/messages"), protocol
+	case "gemini":
+		return appendUpstreamPath(base, "/v1beta/models/"+url.PathEscape(model)+":generateContent"), protocol
+	case "interactions":
+		return appendUpstreamPath(base, "/v1beta/interactions"), protocol
+	case "vertex":
+		return appendUpstreamPath(base, "/v1/publishers/google/models/"+url.PathEscape(model)+":generateContent"), protocol
+	default:
+		u, _ := buildOpenAICompatibilityChatCompletionsURL(baseURL)
+		return u, protocol
+	}
+}
+
+func appendUpstreamPath(base, endpoint string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	endpoint = "/" + strings.TrimLeft(endpoint, "/")
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" {
+		return base + endpoint
+	}
+	basePath := strings.TrimRight(parsed.Path, "/")
+	for _, prefix := range []string{"/v1", "/v1beta"} {
+		if strings.HasPrefix(endpoint, prefix+"/") && strings.HasSuffix(basePath, prefix) {
+			endpoint = strings.TrimPrefix(endpoint, prefix)
+			break
+		}
+	}
+	parsed.Path = strings.TrimRight(basePath, "/") + endpoint
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func upstreamHealthProbePayloadForProtocol(protocol, model string, challenge upstreamHealthProbeChallenge) any {
+	switch protocol {
+	case "responses", "xai-responses":
+		return map[string]any{"model": model, "input": []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]string{"type": "input_text", "text": challenge.Prompt}}}}, "instructions": upstreamHealthProbeInstructions, "max_output_tokens": upstreamHealthProbeMaxTokens, "stream": false, "store": false}
+	case "claude":
+		return map[string]any{"model": model, "max_tokens": upstreamHealthProbeMaxTokens, "messages": []any{map[string]any{"role": "user", "content": challenge.Prompt}}}
+	case "gemini", "vertex":
+		return map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": challenge.Prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": upstreamHealthProbeMaxTokens}}
+	case "interactions":
+		return map[string]any{"model": model, "input": challenge.Prompt, "stream": false}
+	default:
+		return upstreamHealthProbePayload(model, challenge)
+	}
+}
+
+func setUpstreamHealthProbeHeaders(req *http.Request, auth *coreauth.Auth, key, protocol string) {
+	switch protocol {
+	case "claude":
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	case "gemini", "interactions":
+		req.Header.Set("x-goog-api-key", key)
+		if protocol == "interactions" {
+			req.Header.Set("Api-Revision", "2026-05-20")
+		}
+	case "vertex":
+		req.Header.Set("x-goog-api-key", key)
+	default:
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if auth != nil {
+		for name, value := range auth.Attributes {
+			if strings.HasPrefix(name, "header:") {
+				req.Header.Set(strings.TrimPrefix(name, "header:"), value)
+			}
+		}
+	}
 }
 
 func newUpstreamHealthProbeChallenge() upstreamHealthProbeChallenge {
@@ -1020,6 +1265,32 @@ func isSuccessfulUpstreamHealthProbeResponse(body []byte, expected string) bool 
 	return false
 }
 
+func isSuccessfulUpstreamHealthProbeResponseForProtocol(body []byte, expected, protocol string) bool {
+	if protocol == "openai" {
+		return isSuccessfulUpstreamHealthProbeResponse(body, expected)
+	}
+	var text string
+	paths := map[string][]string{
+		"responses":     {"output_text", "output.0.content.0.text", "output.0.content.0"},
+		"xai-responses": {"output_text", "output.0.content.0.text", "output.0.content.0"},
+		"claude":        {"content.0.text"},
+		"gemini":        {"candidates.0.content.parts.0.text"},
+		"vertex":        {"candidates.0.content.parts.0.text"},
+		"interactions":  {"steps.0.content.0.text", "output.0.content.0.text", "output_text"},
+	}
+	for _, path := range paths[protocol] {
+		if value := gjson.GetBytes(body, path); value.Exists() {
+			text += " " + value.String()
+		}
+	}
+	for _, token := range strings.FieldsFunc(text, func(r rune) bool { return r < '0' || r > '9' }) {
+		if token == strings.TrimSpace(expected) {
+			return true
+		}
+	}
+	return false
+}
+
 func upstreamHealthProbeResponseText(body []byte) string {
 	content := gjson.GetBytes(body, "choices.0.message.content")
 	if !content.Exists() {
@@ -1059,7 +1330,7 @@ func (h *Handler) probeUpstreamBillingEntry(ctx context.Context, auth *coreauth.
 	if h == nil || auth == nil {
 		return upstreamBillingProbeEntry{}, false
 	}
-	if !isOpenAICompatibilityAuth(auth) {
+	if !isEligibleUpstreamBillingAuth(auth) {
 		return upstreamBillingProbeEntry{}, false
 	}
 	if auth.Disabled || auth.Status == coreauth.StatusDisabled {

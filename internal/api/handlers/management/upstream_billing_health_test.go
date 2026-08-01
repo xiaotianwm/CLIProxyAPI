@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,6 +40,75 @@ func TestBuildOpenAICompatibilityChatCompletionsURLFollowsBaseURLVersion(t *test
 				t.Fatalf("URL = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildUpstreamHealthProbeURLByProvider(t *testing.T) {
+	tests := []struct {
+		provider, base, model, wantPath string
+	}{
+		{"openai-compatibility", "https://example.test/v1", "gpt", "/v1/chat/completions"},
+		{"codex", "https://example.test/v1", "gpt-5.5", "/v1/responses"},
+		{"xai", "https://example.test/v1", "grok-4", "/v1/responses"},
+		{"claude", "https://example.test", "claude-sonnet", "/v1/messages"},
+		{"gemini", "https://example.test", "gemini-2.5-flash", "/v1beta/models/gemini-2.5-flash:generateContent"},
+		{"gemini-interactions", "https://example.test/v1beta", "agent", "/v1beta/interactions"},
+		{"claude", "", "claude-sonnet", "/v1/messages"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			auth := &coreauth.Auth{Provider: tt.provider}
+			got, _ := buildUpstreamHealthProbeURL(auth, tt.base, tt.model)
+			parsed, err := url.Parse(got)
+			if err != nil || parsed.Path != tt.wantPath {
+				t.Fatalf("URL=%q path=%q want %q", got, parsed.Path, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestDefaultBaseURLAuthIsHealthEligibleButNotBillingEligible(t *testing.T) {
+	auth := &coreauth.Auth{
+		Provider:   "claude",
+		Attributes: map[string]string{"api_key": "test-key"},
+	}
+	if !isEligibleUpstreamProbeAuth(auth) {
+		t.Fatal("default-base API key auth should be eligible for health probes")
+	}
+	if isEligibleUpstreamBillingAuth(auth) {
+		t.Fatal("Sub2API billing probe requires an explicit base URL")
+	}
+}
+
+func TestUpstreamProbeFingerprintTracksModelsAndHeaders(t *testing.T) {
+	base := &coreauth.Auth{ID: "id", Index: "1", Provider: "claude", Attributes: map[string]string{"api_key": "key", "models_hash": "a", "header:X-Test": "one"}}
+	changedModel := base.Clone()
+	changedModel.Attributes["models_hash"] = "b"
+	changedHeader := base.Clone()
+	changedHeader.Attributes["header:X-Test"] = "two"
+	first := upstreamProbeFingerprint(base, upstreamProbeHealth, "model")
+	if first == upstreamProbeFingerprint(changedModel, upstreamProbeHealth, "model") {
+		t.Fatal("models_hash change must refresh health probe tasks")
+	}
+	if first == upstreamProbeFingerprint(changedHeader, upstreamProbeHealth, "model") {
+		t.Fatal("custom header change must refresh health probe tasks")
+	}
+}
+
+func TestSuccessfulUpstreamHealthProbeResponseByProtocol(t *testing.T) {
+	tests := []struct {
+		protocol, body string
+	}{
+		{"responses", "{\"output_text\":\"answer: 46\"}"},
+		{"xai-responses", "{\"output\":[{\"content\":[{\"text\":\"46\"}]}]}"},
+		{"claude", "{\"content\":[{\"type\":\"text\",\"text\":\"46\"}]}"},
+		{"gemini", "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"46\"}]}}]}"},
+		{"interactions", "{\"steps\":[{\"content\":[{\"text\":\"46\"}]}]}"},
+	}
+	for _, tt := range tests {
+		if !isSuccessfulUpstreamHealthProbeResponseForProtocol([]byte(tt.body), "46", tt.protocol) {
+			t.Fatalf("protocol %s was not recognized", tt.protocol)
+		}
 	}
 }
 

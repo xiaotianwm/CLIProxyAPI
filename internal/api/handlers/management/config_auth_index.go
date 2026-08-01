@@ -10,27 +10,32 @@ import (
 
 type geminiKeyWithAuthIndex struct {
 	config.GeminiKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex       string                     `json:"auth-index,omitempty"`
+	UpstreamBilling *upstreamBillingProbeEntry `json:"upstream-billing,omitempty"`
 }
 
 type claudeKeyWithAuthIndex struct {
 	config.ClaudeKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex       string                     `json:"auth-index,omitempty"`
+	UpstreamBilling *upstreamBillingProbeEntry `json:"upstream-billing,omitempty"`
 }
 
 type codexKeyWithAuthIndex struct {
 	config.CodexKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex       string                     `json:"auth-index,omitempty"`
+	UpstreamBilling *upstreamBillingProbeEntry `json:"upstream-billing,omitempty"`
 }
 
 type xaiKeyWithAuthIndex struct {
 	config.XAIKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex       string                     `json:"auth-index,omitempty"`
+	UpstreamBilling *upstreamBillingProbeEntry `json:"upstream-billing,omitempty"`
 }
 
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex       string                     `json:"auth-index,omitempty"`
+	UpstreamBilling *upstreamBillingProbeEntry `json:"upstream-billing,omitempty"`
 }
 
 type openAICompatibilityAPIKeyWithAuthIndex struct {
@@ -90,6 +95,7 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -106,9 +112,15 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 			id, _ := idGen.Next("gemini:apikey", key, entry.BaseURL)
 			authIndex = liveIndexByID[id]
 		}
+		var billing *upstreamBillingProbeEntry
+		if cached, ok := billingByAuthIndex[authIndex]; ok {
+			item := cached
+			billing = &item
+		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:       entry,
+			AuthIndex:       authIndex,
+			UpstreamBilling: billing,
 		}
 	}
 	return out
@@ -119,6 +131,7 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -135,9 +148,15 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 			id, _ := idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
 			authIndex = liveIndexByID[id]
 		}
+		var billing *upstreamBillingProbeEntry
+		if cached, ok := billingByAuthIndex[authIndex]; ok {
+			item := cached
+			billing = &item
+		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:       entry,
+			AuthIndex:       authIndex,
+			UpstreamBilling: billing,
 		}
 	}
 	return out
@@ -148,6 +167,7 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -164,9 +184,15 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 			id, _ := idGen.Next("claude:apikey", key, entry.BaseURL)
 			authIndex = liveIndexByID[id]
 		}
+		var billing *upstreamBillingProbeEntry
+		if cached, ok := billingByAuthIndex[authIndex]; ok {
+			item := cached
+			billing = &item
+		}
 		out[i] = claudeKeyWithAuthIndex{
-			ClaudeKey: entry,
-			AuthIndex: authIndex,
+			ClaudeKey:       entry,
+			AuthIndex:       authIndex,
+			UpstreamBilling: billing,
 		}
 	}
 	return out
@@ -177,6 +203,7 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -193,9 +220,15 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 			id, _ := idGen.Next("codex:apikey", key, entry.BaseURL)
 			authIndex = liveIndexByID[id]
 		}
+		var billing *upstreamBillingProbeEntry
+		if cached, ok := billingByAuthIndex[authIndex]; ok {
+			item := cached
+			billing = &item
+		}
 		out[i] = codexKeyWithAuthIndex{
-			CodexKey:  entry,
-			AuthIndex: authIndex,
+			CodexKey:        entry,
+			AuthIndex:       authIndex,
+			UpstreamBilling: billing,
 		}
 	}
 	return out
@@ -206,6 +239,7 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -222,9 +256,15 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
 			authIndex = liveIndexByID[id]
 		}
+		var billing *upstreamBillingProbeEntry
+		if cached, ok := billingByAuthIndex[authIndex]; ok {
+			item := cached
+			billing = &item
+		}
 		out[i] = xaiKeyWithAuthIndex{
-			XAIKey:    entry,
-			AuthIndex: authIndex,
+			XAIKey:          entry,
+			AuthIndex:       authIndex,
+			UpstreamBilling: billing,
 		}
 	}
 	return out
@@ -235,6 +275,7 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	billingByAuthIndex := h.upstreamBillingProbeByAuthIndex()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -248,9 +289,15 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 		entry := h.cfg.VertexCompatAPIKey[i]
 		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
 		authIndex := liveIndexByID[id]
+		var billing *upstreamBillingProbeEntry
+		if cached, ok := billingByAuthIndex[authIndex]; ok {
+			item := cached
+			billing = &item
+		}
 		out[i] = vertexCompatKeyWithAuthIndex{
 			VertexCompatKey: entry,
 			AuthIndex:       authIndex,
+			UpstreamBilling: billing,
 		}
 	}
 	return out
