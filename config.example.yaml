@@ -43,6 +43,8 @@ upstream-billing-probe:
   health-model: gpt-5.5
   # Whether probes automatically update priority by health tier, then by effective rate multiplier.
   auto-priority-enabled: false
+  # Last successful effective multipliers are stored here automatically by stable auth index.
+  # saved-rate-multipliers: {}
 
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"

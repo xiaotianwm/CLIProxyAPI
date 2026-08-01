@@ -316,6 +316,10 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 	if len(path) > 0 && path[len(path)-1] == "weight" && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!int" {
 		return false
 	}
+	// A persisted zero multiplier means a free upstream and must not be pruned as a default.
+	if len(path) >= 2 && path[0] == "upstream-billing-probe" && path[1] == "saved-rate-multipliers" {
+		return false
+	}
 
 	// First check if it's a zero value
 	if isZeroValueNode(node) {

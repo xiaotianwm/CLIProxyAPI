@@ -213,6 +213,39 @@ func (h *Handler) upstreamBillingProbeSettingsPayload() upstreamBillingProbeSett
 	}
 }
 
+func validPersistedUpstreamRate(value float64) bool {
+	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func (h *Handler) restoreUpstreamRateMultipliers() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cfg == nil || len(h.cfg.UpstreamBillingProbe.SavedRateMultipliers) == 0 {
+		return
+	}
+	entries := make([]upstreamBillingProbeEntry, 0, len(h.cfg.UpstreamBillingProbe.SavedRateMultipliers))
+	for rawAuthIndex, value := range h.cfg.UpstreamBillingProbe.SavedRateMultipliers {
+		authIndex := strings.TrimSpace(rawAuthIndex)
+		if authIndex == "" || !validPersistedUpstreamRate(value) {
+			continue
+		}
+		rate := value
+		entries = append(entries, upstreamBillingProbeEntry{
+			AuthIndex:               authIndex,
+			Status:                  "ok",
+			GroupRateMultiplier:     &rate,
+			ResolvedRateMultiplier:  &rate,
+			EffectiveRateMultiplier: &rate,
+		})
+	}
+	if len(entries) > 0 {
+		h.upstreamBillingProbeCache = &upstreamBillingProbeCache{entries: entries}
+	}
+}
+
 func isOpenAICompatibilityAuth(auth *coreauth.Auth) bool {
 	if auth == nil {
 		return false
@@ -460,10 +493,42 @@ func (h *Handler) storeUpstreamBillingProbeResultLocked(entry upstreamBillingPro
 		entry.HealthHistory = append([]upstreamHealthProbeSample(nil), previous.HealthHistory...)
 		h.upstreamBillingProbeCache.entries[i] = entry
 		h.upstreamBillingProbeCache.updatedAt = time.Now().UTC()
+		h.persistUpstreamRateMultiplierLocked(entry)
 		return
 	}
 	h.upstreamBillingProbeCache.entries = append(h.upstreamBillingProbeCache.entries, entry)
 	h.upstreamBillingProbeCache.updatedAt = time.Now().UTC()
+	h.persistUpstreamRateMultiplierLocked(entry)
+}
+
+func (h *Handler) persistUpstreamRateMultiplierLocked(entry upstreamBillingProbeEntry) {
+	if h.cfg == nil || !strings.EqualFold(strings.TrimSpace(entry.Status), "ok") || entry.EffectiveRateMultiplier == nil {
+		return
+	}
+	authIndex := strings.TrimSpace(entry.AuthIndex)
+	value := *entry.EffectiveRateMultiplier
+	if authIndex == "" || !validPersistedUpstreamRate(value) {
+		return
+	}
+	if h.cfg.UpstreamBillingProbe.SavedRateMultipliers == nil {
+		h.cfg.UpstreamBillingProbe.SavedRateMultipliers = make(map[string]float64)
+	}
+	previous, existed := h.cfg.UpstreamBillingProbe.SavedRateMultipliers[authIndex]
+	if existed && previous == value {
+		return
+	}
+	h.cfg.UpstreamBillingProbe.SavedRateMultipliers[authIndex] = value
+	if h.configFilePath == "" {
+		return
+	}
+	if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
+		if existed {
+			h.cfg.UpstreamBillingProbe.SavedRateMultipliers[authIndex] = previous
+		} else {
+			delete(h.cfg.UpstreamBillingProbe.SavedRateMultipliers, authIndex)
+		}
+		log.WithError(errSave).WithField("auth_index", authIndex).Error("management: failed to persist upstream rate multiplier")
+	}
 }
 
 func (h *Handler) storeUpstreamHealthProbeResult(auth *coreauth.Auth, sample upstreamHealthProbeSample) {

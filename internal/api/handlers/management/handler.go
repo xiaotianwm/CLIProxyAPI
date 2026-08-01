@@ -86,6 +86,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		envSecret:             envSecret,
 		upstreamProbeInFlight: make(map[upstreamProbeTaskKey]upstreamProbeTask),
 	}
+	h.restoreUpstreamRateMultipliers()
 	h.startAttemptCleanup()
 	h.startUpstreamBillingProbeLoop()
 	return h

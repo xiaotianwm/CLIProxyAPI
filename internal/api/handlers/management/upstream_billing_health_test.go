@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -288,6 +291,154 @@ func TestPutUpstreamBillingProbeManualRateRecalculatesPriority(t *testing.T) {
 	}
 	if got := h.cfg.ClaudeKey[0].Priority; got != 2200 {
 		t.Fatalf("priority after manual rate = %d, want 2200", got)
+	}
+}
+
+func TestUpstreamRateMultiplierPersistsAcrossRestart(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	initial := "# keep this comment\nupstream-billing-probe:\n  health-enabled: true\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	rate := 0.125
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	h.storeUpstreamBillingProbeResult(upstreamBillingProbeEntry{
+		AuthIndex:               "stable-auth-index",
+		Status:                  "ok",
+		EffectiveRateMultiplier: &rate,
+	})
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "# keep this comment") || !strings.Contains(text, "saved-rate-multipliers:") || !strings.Contains(text, "stable-auth-index: 0.125") {
+		t.Fatalf("persisted config missing rate or comment:\n%s", text)
+	}
+
+	reloaded, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	restarted := &Handler{cfg: reloaded}
+	restarted.restoreUpstreamRateMultipliers()
+	entry, ok := restarted.previousUpstreamBillingProbeEntry("stable-auth-index")
+	if !ok || entry.Status != "ok" || entry.EffectiveRateMultiplier == nil || *entry.EffectiveRateMultiplier != rate {
+		t.Fatalf("restored entry = %#v, want persisted rate %.3f", entry, rate)
+	}
+}
+
+func TestZeroUpstreamRateMultiplierPersistsAcrossRestart(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	rate := 0.0
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	h.storeUpstreamBillingProbeResult(upstreamBillingProbeEntry{
+		AuthIndex:               "free-upstream",
+		Status:                  "ok",
+		EffectiveRateMultiplier: &rate,
+	})
+
+	reloaded, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	got, exists := reloaded.UpstreamBillingProbe.SavedRateMultipliers["free-upstream"]
+	if !exists || got != 0 {
+		t.Fatalf("persisted zero rate exists=%v value=%v", exists, got)
+	}
+}
+
+func TestRestoredUpstreamRateBindsToRuntimeProviderRow(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth, err := manager.Register(context.Background(), testUpstreamProbeAuth("https://example.test/v1"))
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	authIndex := auth.EnsureIndex()
+	rate := 0.25
+	h := &Handler{
+		cfg: &config.Config{UpstreamBillingProbe: config.UpstreamBillingProbe{
+			SavedRateMultipliers: map[string]float64{authIndex: rate},
+		}},
+		authManager: manager,
+	}
+	h.restoreUpstreamRateMultipliers()
+	items := h.upstreamBillingProbeCacheSnapshot()
+	if len(items) != 1 || items[0].AuthIndex != authIndex || items[0].EffectiveRateMultiplier == nil || *items[0].EffectiveRateMultiplier != rate {
+		t.Fatalf("restored provider rows = %#v", items)
+	}
+}
+
+func TestFailedUpstreamRateProbeDoesNotOverwritePersistedSuccess(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	rate := 1.25
+	h := &Handler{cfg: cfg, configFilePath: configPath}
+	h.storeUpstreamBillingProbeResult(upstreamBillingProbeEntry{
+		AuthIndex:               "stable-auth-index",
+		Status:                  "ok",
+		EffectiveRateMultiplier: &rate,
+	})
+	h.storeUpstreamBillingProbeResult(upstreamBillingProbeEntry{
+		AuthIndex: "stable-auth-index",
+		Status:    "failed",
+		Error:     "request-failed",
+	})
+
+	reloaded, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if got := reloaded.UpstreamBillingProbe.SavedRateMultipliers["stable-auth-index"]; got != rate {
+		t.Fatalf("persisted rate = %v, want %v", got, rate)
+	}
+}
+
+func TestUpstreamRatePersistenceFailureCanRetry(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	rate := 0.5
+	h := &Handler{cfg: cfg, configFilePath: dir}
+	entry := upstreamBillingProbeEntry{
+		AuthIndex:               "stable-auth-index",
+		Status:                  "ok",
+		EffectiveRateMultiplier: &rate,
+	}
+	h.storeUpstreamBillingProbeResult(entry)
+	if _, exists := cfg.UpstreamBillingProbe.SavedRateMultipliers["stable-auth-index"]; exists {
+		t.Fatal("failed save must roll back the in-memory persisted marker")
+	}
+
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write retry config: %v", err)
+	}
+	h.configFilePath = configPath
+	h.storeUpstreamBillingProbeResult(entry)
+	reloaded, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload retry config: %v", err)
+	}
+	if got := reloaded.UpstreamBillingProbe.SavedRateMultipliers["stable-auth-index"]; got != rate {
+		t.Fatalf("retried rate = %v, want %v", got, rate)
 	}
 }
 

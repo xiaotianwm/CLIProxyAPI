@@ -199,6 +199,9 @@ type UpstreamBillingProbe struct {
 	HealthModel string `yaml:"health-model"`
 	// AutoPriorityEnabled updates provider priority by health tier, then by effective rate multiplier.
 	AutoPriorityEnabled bool `yaml:"auto-priority-enabled"`
+	// SavedRateMultipliers persists the last successful effective multiplier by stable auth index.
+	// Auth indexes are opaque hashes and do not expose upstream API keys.
+	SavedRateMultipliers map[string]float64 `yaml:"saved-rate-multipliers,omitempty" json:"saved-rate-multipliers,omitempty"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
