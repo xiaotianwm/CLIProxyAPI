@@ -217,6 +217,7 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot 
 		h.appliedReloadGeneration = snapshot.generation
 	}
 	h.mu.Unlock()
+	h.cancelDisabledUpstreamProbeTasks()
 }
 
 // reloadConfigAfterManagementSaveAsync reloads from an independent config snapshot.

@@ -235,6 +235,67 @@ func isEligibleUpstreamBillingAuth(auth *coreauth.Auth) bool {
 	return isEligibleUpstreamAuth(auth) && strings.TrimSpace(auth.Attributes["base_url"]) != ""
 }
 
+func excludesAllModels(models []string) bool {
+	for _, model := range models {
+		if strings.TrimSpace(model) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// upstreamAuthEnabled resolves the provider-page enabled state from config.
+// Native API-key providers encode disabled as excluded-models: ["*"], while
+// OpenAI-compatible providers have a dedicated disabled field.
+func (h *Handler) upstreamAuthEnabled(auth *coreauth.Auth) bool {
+	if h == nil || !isEligibleUpstreamAuth(auth) {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.upstreamAuthEnabledLocked(auth)
+}
+
+// upstreamAuthEnabledLocked expects h.mu to be held.
+func (h *Handler) upstreamAuthEnabledLocked(auth *coreauth.Auth) bool {
+	if h == nil || !isEligibleUpstreamAuth(auth) {
+		return false
+	}
+	configIndexRaw := strings.TrimSpace(auth.Attributes["config_index"])
+	if configIndexRaw == "" {
+		return true
+	}
+	configIndex, err := strconv.Atoi(configIndexRaw)
+	if err != nil || configIndex < 0 {
+		return false
+	}
+
+	if h.cfg == nil {
+		return true
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+	switch provider {
+	case "gemini":
+		return configIndex < len(h.cfg.GeminiKey) && !excludesAllModels(h.cfg.GeminiKey[configIndex].ExcludedModels)
+	case "gemini-interactions":
+		return configIndex < len(h.cfg.InteractionsKey) && !excludesAllModels(h.cfg.InteractionsKey[configIndex].ExcludedModels)
+	case "claude":
+		return configIndex < len(h.cfg.ClaudeKey) && !excludesAllModels(h.cfg.ClaudeKey[configIndex].ExcludedModels)
+	case "codex":
+		return configIndex < len(h.cfg.CodexKey) && !excludesAllModels(h.cfg.CodexKey[configIndex].ExcludedModels)
+	case "xai":
+		return configIndex < len(h.cfg.XAIKey) && !excludesAllModels(h.cfg.XAIKey[configIndex].ExcludedModels)
+	case "vertex":
+		return configIndex < len(h.cfg.VertexCompatAPIKey) && !excludesAllModels(h.cfg.VertexCompatAPIKey[configIndex].ExcludedModels)
+	default:
+		if isOpenAICompatibilityAuth(auth) {
+			return configIndex < len(h.cfg.OpenAICompatibility) && !h.cfg.OpenAICompatibility[configIndex].Disabled
+		}
+	}
+	return true
+}
+
 func (h *Handler) startUpstreamBillingProbeLoop() {
 	go func() {
 		// ponytail: one background loop is enough; add lifecycle stop only if handlers become short-lived.
@@ -377,6 +438,10 @@ func (h *Handler) storeUpstreamBillingProbeResult(entry upstreamBillingProbeEntr
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.storeUpstreamBillingProbeResultLocked(entry)
+}
+
+func (h *Handler) storeUpstreamBillingProbeResultLocked(entry upstreamBillingProbeEntry) {
 	if h.upstreamBillingProbeCache == nil {
 		h.upstreamBillingProbeCache = &upstreamBillingProbeCache{}
 	}
@@ -406,6 +471,17 @@ func (h *Handler) storeUpstreamHealthProbeResult(auth *coreauth.Auth, sample ups
 	if authIndex == "" {
 		return
 	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.storeUpstreamHealthProbeResultLocked(auth, sample)
+}
+
+func (h *Handler) storeUpstreamHealthProbeResultLocked(auth *coreauth.Auth, sample upstreamHealthProbeSample) {
+	authIndex := strings.TrimSpace(auth.EnsureIndex())
+	if authIndex == "" {
+		return
+	}
 	providerName := strings.TrimSpace(auth.Label)
 	if providerName == "" {
 		providerName = strings.TrimSpace(auth.Attributes["compat_name"])
@@ -413,9 +489,6 @@ func (h *Handler) storeUpstreamHealthProbeResult(auth *coreauth.Auth, sample ups
 	if providerName == "" {
 		providerName = "openai-compatibility"
 	}
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.upstreamBillingProbeCache == nil {
 		h.upstreamBillingProbeCache = &upstreamBillingProbeCache{}
 	}
@@ -438,6 +511,32 @@ func (h *Handler) storeUpstreamHealthProbeResult(auth *coreauth.Auth, sample ups
 		HealthHistory: []upstreamHealthProbeSample{sample},
 	})
 	h.upstreamBillingProbeCache.updatedAt = time.Now().UTC()
+}
+
+func (h *Handler) commitUpstreamBillingProbeResult(work upstreamProbeWork, token uint64, entry upstreamBillingProbeEntry) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.upstreamAuthEnabledLocked(work.Auth) || !h.upstreamProbeTaskIsCurrent(work.Key, token, work.Fingerprint) {
+		return false
+	}
+	h.storeUpstreamBillingProbeResultLocked(entry)
+	return true
+}
+
+func (h *Handler) commitUpstreamHealthProbeResult(work upstreamProbeWork, token uint64, sample upstreamHealthProbeSample) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.upstreamAuthEnabledLocked(work.Auth) || !h.upstreamProbeTaskIsCurrent(work.Key, token, work.Fingerprint) {
+		return false
+	}
+	h.storeUpstreamHealthProbeResultLocked(work.Auth, sample)
+	return true
 }
 
 func firstHealthProbeSample(samples []upstreamHealthProbeSample) *upstreamHealthProbeSample {
@@ -649,6 +748,7 @@ func (h *Handler) dispatchUpstreamProbes() upstreamProbeDispatchResult {
 	if h == nil {
 		return result
 	}
+	h.reconcileDisabledUpstreamPriorities(context.Background())
 	h.mu.Lock()
 	manager := h.authManager
 	h.mu.Unlock()
@@ -661,7 +761,7 @@ func (h *Handler) dispatchUpstreamProbes() upstreamProbeDispatchResult {
 	works := make([]upstreamProbeWork, 0)
 	valid := make(map[upstreamProbeTaskKey][32]byte)
 	for _, auth := range manager.List() {
-		if !isEligibleUpstreamProbeAuth(auth) {
+		if !isEligibleUpstreamProbeAuth(auth) || !h.upstreamAuthEnabled(auth) {
 			continue
 		}
 		authIndex := strings.TrimSpace(auth.EnsureIndex())
@@ -791,6 +891,36 @@ func (h *Handler) cancelStaleUpstreamProbeTasks(valid map[upstreamProbeTaskKey][
 	}
 }
 
+func (h *Handler) cancelDisabledUpstreamProbeTasks() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
+		return
+	}
+	enabled := make(map[string]struct{})
+	for _, auth := range manager.List() {
+		if !isEligibleUpstreamProbeAuth(auth) || !h.upstreamAuthEnabled(auth) {
+			continue
+		}
+		if authIndex := strings.TrimSpace(auth.EnsureIndex()); authIndex != "" {
+			enabled[authIndex] = struct{}{}
+		}
+	}
+	h.upstreamProbeMu.Lock()
+	defer h.upstreamProbeMu.Unlock()
+	for key, task := range h.upstreamProbeInFlight {
+		if _, ok := enabled[key.AuthIndex]; ok {
+			continue
+		}
+		task.Cancel()
+		delete(h.upstreamProbeInFlight, key)
+	}
+}
+
 func (h *Handler) upstreamProbeTaskIsCurrent(key upstreamProbeTaskKey, token uint64, fingerprint [32]byte) bool {
 	h.upstreamProbeMu.Lock()
 	defer h.upstreamProbeMu.Unlock()
@@ -839,7 +969,7 @@ func (h *Handler) runUpstreamProbeTask(ctx context.Context, token uint64, work u
 	if work.Key.Kind == upstreamProbeBilling {
 		entry, ok := h.probeUpstreamBillingEntry(ctx, work.Auth)
 		if ok && h.upstreamProbeResultIsCurrent(work, token) {
-			h.storeUpstreamBillingProbeResult(entry)
+			h.commitUpstreamBillingProbeResult(work, token, entry)
 		}
 		return
 	}
@@ -847,7 +977,9 @@ func (h *Handler) runUpstreamProbeTask(ctx context.Context, token uint64, work u
 	if !ok || !h.upstreamProbeResultIsCurrent(work, token) {
 		return
 	}
-	h.storeUpstreamHealthProbeResult(work.Auth, sample)
+	if !h.commitUpstreamHealthProbeResult(work, token, sample) {
+		return
+	}
 	if h.upstreamAutoPriorityEnabled() {
 		h.applyUpstreamHealthPriorities(context.Background(), []upstreamBillingProbeEntry{{
 			AuthIndex:     work.Key.AuthIndex,
@@ -874,6 +1006,9 @@ func (h *Handler) upstreamProbeResultIsCurrent(work upstreamProbeWork, token uin
 	for _, auth := range manager.List() {
 		if auth == nil || strings.TrimSpace(auth.EnsureIndex()) != work.Key.AuthIndex {
 			continue
+		}
+		if !h.upstreamAuthEnabled(auth) {
+			return false
 		}
 		return upstreamProbeFingerprint(auth, work.Key.Kind, work.HealthModel) == work.Fingerprint
 	}
@@ -942,6 +1077,78 @@ func upstreamHealthPriority(sample upstreamHealthProbeSample) int {
 		return upstreamHealthNormalPriority
 	}
 	return upstreamHealthExcellentPriority
+}
+
+func (h *Handler) reconcileDisabledUpstreamPriorities(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.cfg == nil {
+		h.mu.Unlock()
+		return
+	}
+	changed := false
+	for i := range h.cfg.GeminiKey {
+		if excludesAllModels(h.cfg.GeminiKey[i].ExcludedModels) && h.cfg.GeminiKey[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.GeminiKey[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	for i := range h.cfg.InteractionsKey {
+		if excludesAllModels(h.cfg.InteractionsKey[i].ExcludedModels) && h.cfg.InteractionsKey[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.InteractionsKey[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	for i := range h.cfg.ClaudeKey {
+		if excludesAllModels(h.cfg.ClaudeKey[i].ExcludedModels) && h.cfg.ClaudeKey[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.ClaudeKey[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	for i := range h.cfg.CodexKey {
+		if excludesAllModels(h.cfg.CodexKey[i].ExcludedModels) && h.cfg.CodexKey[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.CodexKey[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	for i := range h.cfg.XAIKey {
+		if excludesAllModels(h.cfg.XAIKey[i].ExcludedModels) && h.cfg.XAIKey[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.XAIKey[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	for i := range h.cfg.VertexCompatAPIKey {
+		if excludesAllModels(h.cfg.VertexCompatAPIKey[i].ExcludedModels) && h.cfg.VertexCompatAPIKey[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.VertexCompatAPIKey[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	for i := range h.cfg.OpenAICompatibility {
+		if h.cfg.OpenAICompatibility[i].Disabled && h.cfg.OpenAICompatibility[i].Priority != upstreamHealthFailedPriority {
+			h.cfg.OpenAICompatibility[i].Priority = upstreamHealthFailedPriority
+			changed = true
+		}
+	}
+	if !changed {
+		h.mu.Unlock()
+		return
+	}
+	if h.configFilePath != "" {
+		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
+			h.mu.Unlock()
+			log.WithError(errSave).Error("management: failed to save disabled upstream priority")
+			return
+		}
+	}
+	snapshot := h.reloadSnapshotConfigLocked()
+	h.mu.Unlock()
+	reloadCtx := context.Background()
+	if ctx != nil {
+		reloadCtx = context.WithoutCancel(ctx)
+	}
+	h.reloadConfigAfterManagementSave(reloadCtx, snapshot)
 }
 
 func (h *Handler) applyUpstreamHealthPriorities(ctx context.Context, entries []upstreamBillingProbeEntry) {

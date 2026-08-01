@@ -46,6 +46,9 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 		id, _ := idGen.Next("gemini:apikey", entry.APIKey, entry.BaseURL)
 		if id == authID {
 			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			if disable {
+				entry.Priority = upstreamHealthFailedPriority
+			}
 			return true, nil
 		}
 	}
@@ -54,6 +57,9 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 		id, _ := idGen.Next("gemini-interactions:apikey", entry.APIKey, entry.BaseURL)
 		if id == authID {
 			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			if disable {
+				entry.Priority = upstreamHealthFailedPriority
+			}
 			return true, nil
 		}
 	}
@@ -62,6 +68,9 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 		id, _ := idGen.Next("claude:apikey", entry.APIKey, entry.BaseURL)
 		if id == authID {
 			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			if disable {
+				entry.Priority = upstreamHealthFailedPriority
+			}
 			return true, nil
 		}
 	}
@@ -70,6 +79,9 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 		id, _ := idGen.Next("codex:apikey", entry.APIKey, entry.BaseURL)
 		if id == authID {
 			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			if disable {
+				entry.Priority = upstreamHealthFailedPriority
+			}
 			return true, nil
 		}
 	}
@@ -78,6 +90,9 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 		id, _ := idGen.Next("xai:apikey", entry.APIKey, entry.BaseURL)
 		if id == authID {
 			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			if disable {
+				entry.Priority = upstreamHealthFailedPriority
+			}
 			return true, nil
 		}
 	}
@@ -86,6 +101,9 @@ func toggleConfigAPIKeyExcludedAll(cfg *config.Config, auth *coreauth.Auth, disa
 		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
 		if id == authID {
 			entry.ExcludedModels = setConfigAPIKeyExcludedAll(entry.ExcludedModels, disable)
+			if disable {
+				entry.Priority = upstreamHealthFailedPriority
+			}
 			return true, nil
 		}
 	}

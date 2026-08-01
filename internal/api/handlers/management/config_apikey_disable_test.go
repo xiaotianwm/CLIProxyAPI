@@ -45,6 +45,9 @@ func TestToggleConfigAPIKeyExcludedAll_XAI(t *testing.T) {
 	if len(cfg.XAIKey[0].ExcludedModels) != 1 || cfg.XAIKey[0].ExcludedModels[0] != "*" {
 		t.Fatalf("excluded-models = %#v, want [*]", cfg.XAIKey[0].ExcludedModels)
 	}
+	if cfg.XAIKey[0].Priority != upstreamHealthFailedPriority {
+		t.Fatalf("priority = %d, want %d", cfg.XAIKey[0].Priority, upstreamHealthFailedPriority)
+	}
 }
 
 func TestToggleConfigAPIKeyExcludedAll_Codex(t *testing.T) {

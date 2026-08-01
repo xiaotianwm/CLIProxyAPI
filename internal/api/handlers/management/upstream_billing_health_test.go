@@ -348,6 +348,162 @@ func TestDispatchUpstreamProbesSkipsDuplicateTasksWithoutWaiting(t *testing.T) {
 	}
 }
 
+func TestDispatchUpstreamProbesSkipsDisabledUpstreamsAndForcesPriority(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sub2api/billing":
+			writeTestBillingResponse(w)
+		case "/chat/completions":
+			writeTestHealthResponse(w, r)
+		case "/v1/messages":
+			_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"1"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	native := &coreauth.Auth{
+		ID:       "disabled-claude",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"api_key":      "claude-key",
+			"base_url":     server.URL,
+			"config_index": "0",
+		},
+	}
+	compat := testUpstreamProbeAuthWithID("disabled-compat", "compat-key", server.URL)
+	compat.Attributes["config_index"] = "0"
+	for _, auth := range []*coreauth.Auth{native, compat} {
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("register %s: %v", auth.ID, err)
+		}
+	}
+	h := &Handler{
+		cfg: &config.Config{
+			UpstreamBillingProbe: config.UpstreamBillingProbe{HealthEnabled: true, HealthModel: "gpt-5.5"},
+			ClaudeKey: []config.ClaudeKey{{
+				APIKey:         "claude-key",
+				BaseURL:        server.URL,
+				Priority:       88,
+				ExcludedModels: []string{" * "},
+			}},
+			OpenAICompatibility: []config.OpenAICompatibility{{
+				Name:     "disabled-compat",
+				BaseURL:  server.URL,
+				Priority: 77,
+				Disabled: true,
+			}},
+		},
+		authManager:           manager,
+		upstreamProbeInFlight: make(map[upstreamProbeTaskKey]upstreamProbeTask),
+	}
+
+	result := h.dispatchUpstreamProbes()
+	if len(result.Accepted) != 0 || len(result.Running) != 0 {
+		t.Fatalf("disabled dispatch accepted=%#v running=%#v", result.Accepted, result.Running)
+	}
+	if h.cfg.ClaudeKey[0].Priority != upstreamHealthFailedPriority {
+		t.Fatalf("disabled Claude priority = %d, want %d", h.cfg.ClaudeKey[0].Priority, upstreamHealthFailedPriority)
+	}
+	if h.cfg.OpenAICompatibility[0].Priority != upstreamHealthFailedPriority {
+		t.Fatalf("disabled compatibility priority = %d, want %d", h.cfg.OpenAICompatibility[0].Priority, upstreamHealthFailedPriority)
+	}
+
+	h.mu.Lock()
+	h.cfg.ClaudeKey[0].ExcludedModels = nil
+	h.cfg.OpenAICompatibility[0].Disabled = false
+	h.mu.Unlock()
+	result = h.dispatchUpstreamProbes()
+	if len(result.Accepted) != 4 {
+		t.Fatalf("re-enabled dispatch accepted=%d, want 4", len(result.Accepted))
+	}
+	waitForProbeTasks(t, h, 0, 2*time.Second)
+}
+
+func TestDisablingUpstreamCancelsTasksAndDropsLateResults(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		switch r.URL.Path {
+		case "/v1/sub2api/billing":
+			writeTestBillingResponse(w)
+		case "/chat/completions":
+			writeTestHealthResponse(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+
+	h := newUpstreamProbeTestHandler(t, server.URL, true)
+	auth := h.authManager.List()[0]
+	auth.Attributes["config_index"] = "0"
+	if _, err := h.authManager.Update(context.Background(), auth); err != nil {
+		t.Fatalf("update auth: %v", err)
+	}
+	h.cfg.OpenAICompatibility = []config.OpenAICompatibility{{
+		Name:     auth.Label,
+		BaseURL:  server.URL,
+		Priority: 100,
+	}}
+	first := h.dispatchUpstreamProbes()
+	if len(first.Accepted) != 2 {
+		t.Fatalf("accepted = %d, want 2", len(first.Accepted))
+	}
+	waitTestSignal(t, started)
+	waitTestSignal(t, started)
+
+	h.mu.Lock()
+	h.cfg.OpenAICompatibility[0].Disabled = true
+	h.mu.Unlock()
+	second := h.dispatchUpstreamProbes()
+	if len(second.Accepted) != 0 || len(second.Running) != 0 {
+		t.Fatalf("disabled redispatch accepted=%#v running=%#v", second.Accepted, second.Running)
+	}
+	waitForProbeTasks(t, h, 0, 2*time.Second)
+	if cache := h.loadUpstreamBillingProbeCache(); cache != nil && len(cache.entries) != 0 {
+		t.Fatalf("late disabled results were stored: %#v", cache.entries)
+	}
+}
+
+func TestDisabledUpstreamPreservesCachedProbeData(t *testing.T) {
+	h := newUpstreamProbeTestHandler(t, "https://example.test", true)
+	auth := h.authManager.List()[0]
+	auth.Attributes["config_index"] = "0"
+	if _, err := h.authManager.Update(context.Background(), auth); err != nil {
+		t.Fatalf("update auth: %v", err)
+	}
+	rate := 1.25
+	h.upstreamBillingProbeCache = &upstreamBillingProbeCache{entries: []upstreamBillingProbeEntry{{
+		AuthIndex:               auth.EnsureIndex(),
+		Status:                  "ok",
+		EffectiveRateMultiplier: &rate,
+		HealthHistory: []upstreamHealthProbeSample{{
+			Status:    "ok",
+			LatencyMS: 123,
+			CheckedAt: time.Now().UTC(),
+		}},
+	}}}
+	h.cfg.OpenAICompatibility = []config.OpenAICompatibility{{Disabled: true, Priority: 100}}
+
+	h.dispatchUpstreamProbes()
+	cache := h.loadUpstreamBillingProbeCache()
+	if cache == nil || len(cache.entries) != 1 {
+		t.Fatalf("disabled cache = %#v, want one preserved entry", cache)
+	}
+	entry := cache.entries[0]
+	if entry.EffectiveRateMultiplier == nil || *entry.EffectiveRateMultiplier != rate || len(entry.HealthHistory) != 1 {
+		t.Fatalf("disabled cached data changed: %#v", entry)
+	}
+}
+
 func TestSlowHealthProbeHasNoOverallResponseTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
