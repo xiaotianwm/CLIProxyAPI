@@ -923,6 +923,80 @@ func TestSessionAffinitySelector_FailoverWhenAuthUnavailable(t *testing.T) {
 	}
 }
 
+func TestSessionAffinitySelector_PreservePriorityDrop(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback:             &RoundRobinSelector{},
+		TTL:                  time.Minute,
+		PreservePriorityDrop: true,
+	})
+	defer selector.Stop()
+
+	authA := &Auth{ID: "auth-a", Attributes: map[string]string{"priority": "10"}}
+	authB := &Auth{ID: "auth-b", Attributes: map[string]string{"priority": "5"}}
+	auths := []*Auth{authA, authB}
+	opts := cliproxyexecutor.Options{OriginalRequest: []byte(`{"prompt_cache_key":"priority-drop-session"}`)}
+
+	first, err := selector.Pick(context.Background(), "provider", "model", opts, auths)
+	if err != nil {
+		t.Fatalf("initial Pick() error = %v", err)
+	}
+	if first.ID != authA.ID {
+		t.Fatalf("initial Pick() = %q, want %q", first.ID, authA.ID)
+	}
+
+	authA.Attributes["priority"] = "1"
+	stillBound, err := selector.Pick(context.Background(), "provider", "model", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() after priority drop error = %v", err)
+	}
+	if stillBound.ID != authA.ID {
+		t.Fatalf("Pick() after priority drop = %q, want existing binding %q", stillBound.ID, authA.ID)
+	}
+
+	authA.Unavailable = true
+	failedOver, err := selector.Pick(context.Background(), "provider", "model", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() after auth becomes unavailable error = %v", err)
+	}
+	if failedOver.ID != authB.ID {
+		t.Fatalf("Pick() after auth becomes unavailable = %q, want failover %q", failedOver.ID, authB.ID)
+	}
+}
+
+func TestSessionAffinitySelector_DefaultPriorityDropStillFailsOver(t *testing.T) {
+	t.Parallel()
+
+	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
+		Fallback: &RoundRobinSelector{},
+		TTL:      time.Minute,
+	})
+	defer selector.Stop()
+
+	authA := &Auth{ID: "auth-a", Attributes: map[string]string{"priority": "10"}}
+	authB := &Auth{ID: "auth-b", Attributes: map[string]string{"priority": "5"}}
+	auths := []*Auth{authA, authB}
+	opts := cliproxyexecutor.Options{OriginalRequest: []byte(`{"prompt_cache_key":"default-priority-drop-session"}`)}
+
+	first, err := selector.Pick(context.Background(), "provider", "model", opts, auths)
+	if err != nil {
+		t.Fatalf("initial Pick() error = %v", err)
+	}
+	if first.ID != authA.ID {
+		t.Fatalf("initial Pick() = %q, want %q", first.ID, authA.ID)
+	}
+
+	authA.Attributes["priority"] = "1"
+	failedOver, err := selector.Pick(context.Background(), "provider", "model", opts, auths)
+	if err != nil {
+		t.Fatalf("Pick() after priority drop error = %v", err)
+	}
+	if failedOver.ID != authB.ID {
+		t.Fatalf("default Pick() after priority drop = %q, want %q", failedOver.ID, authB.ID)
+	}
+}
+
 func TestExtractSessionID_ClaudeCodePriorityOverHeader(t *testing.T) {
 	t.Parallel()
 

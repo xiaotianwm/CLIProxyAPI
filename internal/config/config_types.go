@@ -235,6 +235,11 @@ type RoutingConfig struct {
 	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	// SessionAffinityPreservePriorityDrop keeps an existing session bound when its
+	// auth remains usable but drops below the current highest priority tier.
+	// New sessions and genuine auth failures still use the configured strategy.
+	SessionAffinityPreservePriorityDrop bool `yaml:"session-affinity-preserve-priority-drop,omitempty" json:"session-affinity-preserve-priority-drop,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

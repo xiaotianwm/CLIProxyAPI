@@ -531,14 +531,16 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
-	fallback Selector
-	cache    *SessionCache
+	fallback             Selector
+	cache                *SessionCache
+	preservePriorityDrop bool
 }
 
 // SessionAffinityConfig configures the session affinity selector.
 type SessionAffinityConfig struct {
-	Fallback Selector
-	TTL      time.Duration
+	Fallback             Selector
+	TTL                  time.Duration
+	PreservePriorityDrop bool
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -558,9 +560,46 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 		cfg.TTL = time.Hour
 	}
 	return &SessionAffinitySelector{
-		fallback: cfg.Fallback,
-		cache:    NewSessionCache(cfg.TTL),
+		fallback:             cfg.Fallback,
+		cache:                NewSessionCache(cfg.TTL),
+		preservePriorityDrop: cfg.PreservePriorityDrop,
 	}
+}
+
+func (s *SessionAffinitySelector) cachedAuthCandidates(auths []*Auth, model string, now time.Time) []*Auth {
+	if !s.preservePriorityDrop {
+		available, _, _ := collectAvailableByPriority(auths, model, now)
+		bestPriority := 0
+		found := false
+		for priority := range available {
+			if !found || priority > bestPriority {
+				bestPriority = priority
+				found = true
+			}
+		}
+		return available[bestPriority]
+	}
+
+	candidates := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if blocked, _, _ := isAuthBlockedForModel(auth, model, now); blocked {
+			continue
+		}
+		if _, weighted := s.fallback.(*WeightedRoundRobinSelector); weighted && authWeight(auth) <= 0 {
+			continue
+		}
+		candidates = append(candidates, auth)
+	}
+	return candidates
+}
+
+func authInSlice(auths []*Auth, authID string) bool {
+	for _, auth := range auths {
+		if auth != nil && auth.ID == authID {
+			return true
+		}
+	}
+	return false
 }
 
 // Pick selects an auth with session affinity when possible.
@@ -587,6 +626,11 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	if err != nil {
 		return nil, err
 	}
+	cachedCandidates := available
+	if s.preservePriorityDrop {
+		cachedCandidates = s.cachedAuthCandidates(availabilityCandidates, model, now)
+		cachedCandidates = preferCodexWebsocketAuths(ctx, provider, cachedCandidates)
+	}
 
 	cacheKey := provider + "::" + primaryID + "::" + model
 	fallbackKey := ""
@@ -602,9 +646,13 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
-		for _, auth := range available {
+		for _, auth := range cachedCandidates {
 			if auth.ID == cachedAuthID {
 				bind(auth.ID)
+				if s.preservePriorityDrop && !authInSlice(available, auth.ID) {
+					entry.Infof("session-affinity: cache hit, preserved despite priority drop | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
+					return auth, nil
+				}
 				entry.Infof("session-affinity: cache hit | session=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), auth.ID, provider, model)
 				return auth, nil
 			}
@@ -621,7 +669,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 
 	if fallbackKey != "" {
 		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
-			for _, auth := range available {
+			for _, auth := range cachedCandidates {
 				if auth.ID == cachedAuthID {
 					bind(auth.ID)
 					entry.Infof("session-affinity: fallback cache hit | session=%s fallback=%s auth=%s provider=%s model=%s", truncateSessionID(primaryID), truncateSessionID(fallbackID), auth.ID, provider, model)

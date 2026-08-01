@@ -226,6 +226,9 @@ routing:
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
+  # Keep an existing session on its bound credential when only its priority drops.
+  # Disabled, cooled-down, quota-limited, model-unavailable, or excluded weighted credentials still fail over.
+  session-affinity-preserve-priority-drop: false
 
 # Codex provider behavior.
 codex:

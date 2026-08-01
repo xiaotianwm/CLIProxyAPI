@@ -19,6 +19,21 @@ func TestWeightedRoundRobinRoutingSelector(t *testing.T) {
 	}
 }
 
+func TestRoutingSelectorPreservesPriorityDropOption(t *testing.T) {
+	state := normalizedRoutingRuntimeState(&internalconfig.Config{
+		Routing: internalconfig.RoutingConfig{
+			SessionAffinity:                     true,
+			SessionAffinityPreservePriorityDrop: true,
+		},
+	})
+	if !state.sessionAffinityPreservePriorityDrop {
+		t.Fatal("session-affinity preserve-priority-drop was not propagated")
+	}
+	if _, ok := newRoutingSelector(state).(*coreauth.SessionAffinitySelector); !ok {
+		t.Fatalf("selector type = %T, want *auth.SessionAffinitySelector", newRoutingSelector(state))
+	}
+}
+
 func TestServiceRejectsInvalidCredentialWeightConfigCommit(t *testing.T) {
 	originalCfg := &internalconfig.Config{}
 	service := &Service{cfg: originalCfg}
