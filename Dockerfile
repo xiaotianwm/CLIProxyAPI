@@ -16,8 +16,8 @@ ARG BUILD_DATE=unknown
 
 RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.Version=${VERSION}' -X 'main.Commit=${COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" -o ./CLIProxyAPI ./cmd/server/
 
-ARG MANAGEMENT_PANEL_VERSION=v1.20.3-custom.6
-ARG MANAGEMENT_PANEL_SHA256=3fed530c3c9ca439d9212dbc5ce3a5eeb2cab8474e42426170a999d4a9bc5f29
+ARG MANAGEMENT_PANEL_VERSION=v1.20.3-custom.7
+ARG MANAGEMENT_PANEL_SHA256=32cdffabf13b2665d95913e9a24a6712be20f93e475d42b53e18ad061575de3a
 
 RUN curl -fsSL --retry 3 \
     "https://github.com/xiaotianwm/Cli-Proxy-API-Management-Center/releases/download/${MANAGEMENT_PANEL_VERSION}/management.html" \
