@@ -1104,6 +1104,14 @@ func (h *Handler) resolveUpstreamHealthProbeModel(auth *coreauth.Auth, fallback 
 	if fallback != "" {
 		return fallback
 	}
+	switch provider {
+	case "claude":
+		return "claude-3-5-haiku-latest"
+	case "gemini", "gemini-interactions", "vertex":
+		return "gemini-2.5-flash"
+	case "xai":
+		return "grok-3-mini"
+	}
 	return defaultUpstreamHealthProbeModel
 }
 
@@ -1192,7 +1200,7 @@ func upstreamHealthProbePayloadForProtocol(protocol, model string, challenge ups
 	case "gemini", "vertex":
 		return map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": challenge.Prompt}}}}, "generationConfig": map[string]any{"maxOutputTokens": upstreamHealthProbeMaxTokens}}
 	case "interactions":
-		return map[string]any{"model": model, "input": challenge.Prompt, "stream": false}
+		return map[string]any{"agent": model, "input": challenge.Prompt, "stream": false}
 	default:
 		return upstreamHealthProbePayload(model, challenge)
 	}
