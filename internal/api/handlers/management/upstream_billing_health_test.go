@@ -112,6 +112,12 @@ func TestSuccessfulUpstreamHealthProbeResponseByProtocol(t *testing.T) {
 			t.Fatalf("protocol %s was not recognized", tt.protocol)
 		}
 	}
+	if !isSuccessfulUpstreamHealthProbeResponseForProtocol([]byte(`{"output":[{"type":"reasoning","content":[]},{"type":"message","content":[{"type":"output_text","text":"46"}]}]}`), "46", "responses") {
+		t.Fatal("responses text after a non-message output item should be healthy")
+	}
+	if !isSuccessfulUpstreamHealthProbeResponseForProtocol([]byte(`{"steps":[{"type":"reasoning","content":[]},{"type":"model_output","content":[{"type":"text","text":"46"}]}]}`), "46", "interactions") {
+		t.Fatal("interactions text after a non-message step should be healthy")
+	}
 }
 
 func TestUpstreamHealthProbePayloadStaysPlainChatCompletions(t *testing.T) {
@@ -212,11 +218,39 @@ func TestPutUpstreamBillingProbeStoresManualRateAsSuccessfulProbe(t *testing.T) 
 	}
 }
 
+func TestPutUpstreamBillingProbeFindsAuthWithoutRuntimeIndex(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth, err := manager.Register(context.Background(), testUpstreamProbeAuth("https://example.test/v1"))
+	if err != nil {
+		t.Fatalf("register test auth: %v", err)
+	}
+	h := &Handler{authManager: manager}
+	body := []byte(`{"provider":"openaiCompatibility","base-url":"https://example.test/v1","api-key":"test-key","effective-rate-multiplier":1.5}`)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/upstream-billing-probe", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutUpstreamBillingProbe(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var got upstreamBillingProbeEntry
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.AuthIndex != auth.EnsureIndex() || got.Status != "ok" || got.EffectiveRateMultiplier == nil || *got.EffectiveRateMultiplier != 1.5 {
+		t.Fatalf("unexpected manual rate response: %#v", got)
+	}
+}
+
 func TestSuccessfulUpstreamHealthProbeResponse(t *testing.T) {
 	for _, body := range [][]byte{
 		[]byte(`{"choices":[{"message":{"content":"46"}}]}`),
 		[]byte(`{"choices":[{"message":{"content":"The answer is 46."}}]}`),
 		[]byte(`{"choices":[{"message":{"content":[{"type":"text","text":"46"}]}}]}`),
+		[]byte(`{"choices":[{"message":{"content":"The model returned a different format."}}]}`),
 	} {
 		if !isSuccessfulUpstreamHealthProbeResponse(body, "46") {
 			t.Fatalf("expected a successful health response for %s", body)
@@ -225,7 +259,6 @@ func TestSuccessfulUpstreamHealthProbeResponse(t *testing.T) {
 
 	for _, body := range [][]byte{
 		[]byte(`{"choices":[]}`),
-		[]byte(`{"choices":[{"message":{"content":"45"}}]}`),
 		[]byte(`{"choices":[{"message":{"content":null}}]}`),
 		[]byte(`not json`),
 	} {

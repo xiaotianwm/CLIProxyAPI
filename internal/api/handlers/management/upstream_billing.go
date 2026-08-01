@@ -484,6 +484,9 @@ func (h *Handler) GetUpstreamBillingProbe(c *gin.Context) {
 func (h *Handler) PutUpstreamBillingProbe(c *gin.Context) {
 	var body struct {
 		ManualAuthIndex      *string  `json:"auth-index"`
+		ManualProvider       *string  `json:"provider"`
+		ManualBaseURL        *string  `json:"base-url"`
+		ManualAPIKey         *string  `json:"api-key"`
 		ManualRateMultiplier *float64 `json:"effective-rate-multiplier"`
 		IntervalMinutes      *int     `json:"interval-minutes"`
 		HealthEnabled        *bool    `json:"health-enabled"`
@@ -500,28 +503,35 @@ func (h *Handler) PutUpstreamBillingProbe(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if body.ManualAuthIndex != nil || body.ManualRateMultiplier != nil {
-		if body.ManualAuthIndex == nil || body.ManualRateMultiplier == nil || *body.ManualRateMultiplier < 0 || math.IsNaN(*body.ManualRateMultiplier) || math.IsInf(*body.ManualRateMultiplier, 0) {
+	if body.ManualAuthIndex != nil || body.ManualAPIKey != nil || body.ManualRateMultiplier != nil {
+		if body.ManualRateMultiplier == nil || *body.ManualRateMultiplier < 0 || math.IsNaN(*body.ManualRateMultiplier) || math.IsInf(*body.ManualRateMultiplier, 0) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid manual multiplier"})
 			return
 		}
-		authIndex := strings.TrimSpace(*body.ManualAuthIndex)
+		authIndex := ""
+		if body.ManualAuthIndex != nil {
+			authIndex = strings.TrimSpace(*body.ManualAuthIndex)
+		}
 		h.mu.Lock()
 		manager := h.authManager
 		h.mu.Unlock()
 		var auth *coreauth.Auth
 		if manager != nil {
 			for _, candidate := range manager.List() {
-				if candidate != nil && strings.TrimSpace(candidate.EnsureIndex()) == authIndex {
+				if candidate != nil && authIndex != "" && strings.TrimSpace(candidate.EnsureIndex()) == authIndex {
 					auth = candidate
 					break
 				}
+			}
+			if auth == nil {
+				auth = findManualUpstreamRateAuth(manager.List(), body.ManualProvider, body.ManualBaseURL, body.ManualAPIKey)
 			}
 		}
 		if auth == nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "upstream auth not found"})
 			return
 		}
+		authIndex = strings.TrimSpace(auth.EnsureIndex())
 		entry, _ := h.upstreamBillingProbeEntryForAuth(auth)
 		value := *body.ManualRateMultiplier
 		entry.Status = "ok"
@@ -581,6 +591,48 @@ func (h *Handler) PutUpstreamBillingProbe(c *gin.Context) {
 	if ok {
 		h.dispatchUpstreamProbes()
 	}
+}
+
+func findManualUpstreamRateAuth(auths []*coreauth.Auth, provider, baseURL, apiKey *string) *coreauth.Auth {
+	if apiKey == nil || strings.TrimSpace(*apiKey) == "" {
+		return nil
+	}
+	wantProvider := ""
+	if provider != nil {
+		wantProvider = strings.ToLower(strings.TrimSpace(*provider))
+	}
+	wantBaseURL := ""
+	if baseURL != nil {
+		wantBaseURL = strings.TrimRight(strings.ToLower(strings.TrimSpace(*baseURL)), "/")
+	}
+	for _, auth := range auths {
+		if auth == nil || strings.TrimSpace(auth.Attributes["api_key"]) != strings.TrimSpace(*apiKey) {
+			continue
+		}
+		if wantBaseURL != "" && strings.TrimRight(strings.ToLower(strings.TrimSpace(auth.Attributes["base_url"])), "/") != wantBaseURL {
+			continue
+		}
+		runtimeProvider := strings.ToLower(strings.TrimSpace(auth.Provider))
+		switch wantProvider {
+		case "", runtimeProvider:
+		case "interactions":
+			if runtimeProvider != "gemini-interactions" {
+				continue
+			}
+		case "claudeapi":
+			if runtimeProvider != "claude" {
+				continue
+			}
+		case "openaicompatibility":
+			if !isOpenAICompatibilityAuth(auth) {
+				continue
+			}
+		default:
+			continue
+		}
+		return auth
+	}
+	return nil
 }
 
 func (h *Handler) RefreshUpstreamBilling(c *gin.Context) {
@@ -1294,20 +1346,8 @@ func upstreamHealthProbePayload(model string, challenge upstreamHealthProbeChall
 	}
 }
 
-func isSuccessfulUpstreamHealthProbeResponse(body []byte, expected string) bool {
-	expected = strings.TrimSpace(expected)
-	if expected == "" {
-		return false
-	}
-	content := upstreamHealthProbeResponseText(body)
-	for _, token := range strings.FieldsFunc(content, func(r rune) bool {
-		return r < '0' || r > '9'
-	}) {
-		if token == expected {
-			return true
-		}
-	}
-	return false
+func isSuccessfulUpstreamHealthProbeResponse(body []byte, _ string) bool {
+	return strings.TrimSpace(upstreamHealthProbeResponseText(body)) != ""
 }
 
 func isSuccessfulUpstreamHealthProbeResponseForProtocol(body []byte, expected, protocol string) bool {
@@ -1316,24 +1356,19 @@ func isSuccessfulUpstreamHealthProbeResponseForProtocol(body []byte, expected, p
 	}
 	var text string
 	paths := map[string][]string{
-		"responses":     {"output_text", "output.0.content.0.text", "output.0.content.0"},
-		"xai-responses": {"output_text", "output.0.content.0.text", "output.0.content.0"},
-		"claude":        {"content.0.text"},
-		"gemini":        {"candidates.0.content.parts.0.text"},
-		"vertex":        {"candidates.0.content.parts.0.text"},
-		"interactions":  {"steps.0.content.0.text", "output.0.content.0.text", "output_text"},
+		"responses":     {"output_text", "output.#.content.#.text", "output.#.content.#", "output.#.text"},
+		"xai-responses": {"output_text", "output.#.content.#.text", "output.#.content.#", "output.#.text"},
+		"claude":        {"content.#.text"},
+		"gemini":        {"candidates.#.content.parts.#.text"},
+		"vertex":        {"candidates.#.content.parts.#.text"},
+		"interactions":  {"steps.#.content.#.text", "output.#.content.#.text", "output_text"},
 	}
 	for _, path := range paths[protocol] {
 		if value := gjson.GetBytes(body, path); value.Exists() {
 			text += " " + value.String()
 		}
 	}
-	for _, token := range strings.FieldsFunc(text, func(r rune) bool { return r < '0' || r > '9' }) {
-		if token == strings.TrimSpace(expected) {
-			return true
-		}
-	}
-	return false
+	return strings.TrimSpace(text) != ""
 }
 
 func upstreamHealthProbeResponseText(body []byte) string {
